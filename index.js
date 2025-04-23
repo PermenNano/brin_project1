@@ -21,7 +21,7 @@ const pool = new Pool({
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).send('Something broke!');
+  res.status(500).json({ error: 'Internal Server Error' });
 });
 
 // Root route
@@ -30,98 +30,75 @@ app.get('/', (req, res) => {
 });
 
 // Get all sensor data
-app.get('/sensor-data', async (req, res) => {
+app.get('/sensor_data', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM sensor_data');
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server error');
+    next(err);
   }
 });
 
-// Get sensor data by farm name
-app.get('/sensor-data/farm/:farmName', async (req, res) => {
-  const { farmName } = req.params;
+// Get sensor data by farm and date
+app.get('/sensor_data/:farm/:date', async (req, res) => {
+  const { farm, date } = req.params;
   try {
     const result = await pool.query(
-      `
-      SELECT sd.sensor_id, sd.value, sd.timestamp, f.farm_id, f.name AS farm_name, f.location
-      FROM sensor_data sd
-      JOIN farms f ON sd.farm_id = f.farm_id
-      WHERE f.name = $1
-      `,
-      [farmName]
+      'SELECT * FROM sensor_data WHERE farm_id = $1 AND DATE("timestamp") = $2',
+      [farm, date]
     );
     res.json(result.rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server error');
+    next(err);
   }
 });
 
 // Create new sensor data
-app.post('/sensor-data', async (req, res) => {
+app.post('/sensor_data', async (req, res) => {
   const { sensor_id, value, farm_id, timestamp } = req.body;
   try {
     const result = await pool.query(
-      `
-      INSERT INTO sensor_data (sensor_id, value, farm_id, "timestamp")
-      VALUES ($1, $2, $3, $4)
-      RETURNING *
-      `,
+      'INSERT INTO sensor_data (sensor_id, value, farm_id, "timestamp") VALUES ($1, $2, $3, $4) RETURNING *',
       [sensor_id, value, farm_id, timestamp]
     );
-    res.json(result.rows[0]);
+    res.status(201).json(result.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server error');
+    next(err);
   }
 });
 
-// Update sensor data by sensor_id and timestamp
-app.put('/sensor-data/:sensorId/:timestamp', async (req, res) => {
-  const { sensorId, timestamp } = req.params;
-  const { value, farm_id } = req.body;
+// Update sensor data by ID
+app.put('/sensor_data/:id', async (req, res) => {
+  const { id } = req.params;
+  const { sensor_id, value, farm_id, timestamp } = req.body;
   try {
     const result = await pool.query(
-      `
-      UPDATE sensor_data
-      SET value = $1, farm_id = $2
-      WHERE sensor_id = $3 AND "timestamp" = $4
-      RETURNING *
-      `,
-      [value, farm_id, sensorId, timestamp]
+      'UPDATE sensor_data SET sensor_id = $1, value = $2, farm_id = $3, "timestamp" = $4 WHERE id = $5 RETURNING *',
+      [sensor_id, value, farm_id, timestamp, id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).send('Sensor data not found');
+      return res.status(404).json({ error: 'Sensor data not found' });
     }
     res.json(result.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server error');
+    next(err);
   }
 });
 
-// Delete sensor data by sensor_id and timestamp
-app.delete('/sensor-data/:sensorId/:timestamp', async (req, res) => {
-  const { sensorId, timestamp } = req.params;
+// Delete sensor data by ID
+app.delete('/sensor_data/:id', async (req, res) => {
+  const { id } = req.params;
   try {
     const result = await pool.query(
-      `
-      DELETE FROM sensor_data
-      WHERE sensor_id = $1 AND "timestamp" = $2
-      RETURNING *
-      `,
-      [sensorId, timestamp]
+      'DELETE FROM sensor_data WHERE id = $1 RETURNING *',
+      [id]
     );
     if (result.rows.length === 0) {
-      return res.status(404).send('Sensor data not found');
+      return res.status(404).json({ error: 'Sensor data not found' });
     }
     res.json(result.rows[0]);
   } catch (err) {
-    console.error(err);
-    res.status(500).send('Server error');
+    next(err);
   }
 });
 

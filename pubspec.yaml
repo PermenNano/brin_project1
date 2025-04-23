@@ -8,12 +8,13 @@ environment:
   sdk: ">=2.18.0 <3.0.0"
 
 dependencies:
+
   flutter:
     sdk: flutter
-  http: ^latest_version
-  intl: ^latest_version
-  fl_chart: ^latest_version # Update to the latest version
-  flutter_dotenv: ^latest_version
+  http: ^1.1.0
+  intl: ^0.18.0
+  fl_chart:
+  flutter_dotenv: ^5.2.0
 
 dev_dependencies:
   flutter_test:
@@ -22,3 +23,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - .env
+    - assets/images/

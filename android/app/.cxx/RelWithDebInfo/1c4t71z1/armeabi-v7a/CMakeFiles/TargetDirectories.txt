@@ -1,0 +1,2 @@
+C:/Users/ASUS/AndroidStudioProjects/brin_project1/android/app/.cxx/RelWithDebInfo/1c4t71z1/armeabi-v7a/CMakeFiles/edit_cache.dir
+C:/Users/ASUS/AndroidStudioProjects/brin_project1/android/app/.cxx/RelWithDebInfo/1c4t71z1/armeabi-v7a/CMakeFiles/rebuild_cache.dir
