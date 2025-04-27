@@ -13,7 +13,7 @@ dependencies:
     sdk: flutter
   http: ^1.1.0
   intl: ^0.18.0
-  fl_chart:
+  fl_chart: 
   flutter_dotenv: ^5.2.0
 
 dev_dependencies:

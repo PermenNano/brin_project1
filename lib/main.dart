@@ -5,9 +5,9 @@ import 'pages/Jamur.dart';
 import 'pages/Hydroponic.dart';
 import 'pages/Fishery.dart';
 import 'pages/EMFM.dart';
-import 'pages/fishery/temperature.dart';
-import 'pages/fishery/humidity.dart';
-import 'pages/fishery/ph.dart';
+
+import 'pages/graph/humidity.dart';
+import 'pages/graph/ph.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 void main() async {
@@ -27,19 +27,39 @@ class MyApp extends StatelessWidget {
 
     return MaterialApp(
       title: 'BRIN App',
-      theme: ThemeData(
-        primaryColor: Colors.purple,
-        scaffoldBackgroundColor: Colors.white,
+      theme: ThemeData.dark().copyWith( // Use ThemeData.dark() as the base
+        primaryColor: Color.fromARGB(255, 168, 165, 169),
+        scaffoldBackgroundColor: Colors.black, // Set scaffold background to black
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color.fromARGB(255, 168, 165, 169), // Ensure app bar is also themed
+        ),
+        drawerTheme: const DrawerThemeData(
+          backgroundColor: Color.fromARGB(255, 105, 105, 105), // Theme the drawer background
+        ),
+        listTileTheme: const ListTileThemeData(
+          textColor: Colors.white,
+          iconColor: Colors.white,
+        ),
+        textTheme: ThemeData.dark().textTheme.copyWith(
+          bodyMedium: const TextStyle(color: Colors.white),
+          bodySmall: const TextStyle(color: Colors.white70),
+          titleLarge: const TextStyle(color: Colors.white),
+          titleMedium: const TextStyle(color: Colors.white),
+          titleSmall: const TextStyle(color: Colors.white),
+          labelLarge: const TextStyle(color: Colors.white),
+          labelMedium: const TextStyle(color: Colors.white),
+          labelSmall: const TextStyle(color: Colors.white),
+        ),
+        iconTheme: const IconThemeData(color: Colors.white), 
       ),
       home: const LoginPage(),
       routes: {
         '/login': (context) => const LoginPage(),
-        '/gnss': (context) =>  Gnss(date: DateTime.now(), farmId: 'tekno3'),
-        '/jamur': (context) => const Jamur(),
-        '/hydroponic': (context) => Hydroponic(date: DateTime.now(), farmId: 'tekno3'),
-        '/fishery': (context) => Fishery(date: DateTime.now(), farmId: 'tekno3'),
-        '/EMFM': (context) => const EMFM(),
-        '/temperature': (context) => Temperature(startDate: startOfDay, endDate: endOfDay),
+        '/gnss': (context) => DashboardPage(),
+        '/jamur': (context) =>  Jamur(date: DateTime.now(), farmId: '70, 71, 0'),
+        '/hydroponic': (context) => Hydroponic(date: DateTime.now(), farmId: '10, 11'),
+        '/fishery': (context) => Fishery(date: DateTime.now(), farmId: '60, 61'),
+        '/EMFM': (context) => EMFM(date: DateTime.now(), farmId: 'tekno3'),
         '/humidity': (context) => Humidity(startDate: startOfDay, endDate: endOfDay),
         '/ph': (context) => ph(date: DateTime.now()),
       },
@@ -71,7 +91,7 @@ class MainMenu extends StatelessWidget {
             child: Icon(iconData, color: Colors.white, size: 40),
           ),
           const SizedBox(height: 8),
-          Text(label, style: const TextStyle(fontSize: 16)),
+          Text(label, style: const TextStyle(fontSize: 16, color: Colors.white)), // Ensure text is white
         ],
       ),
     );
@@ -81,7 +101,7 @@ class MainMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Main Menu'),
+        title: const Text('AMCS'),
       ),
       drawer: Drawer(
         child: ListView(
@@ -89,7 +109,7 @@ class MainMenu extends StatelessWidget {
           children: [
             DrawerHeader(
               decoration: const BoxDecoration(
-                color: Colors.purple,
+                color: Color.fromARGB(255, 168, 165, 169),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -100,7 +120,7 @@ class MainMenu extends StatelessWidget {
                     style: TextStyle(color: Colors.white, fontSize: 24),
                   ),
                   const SizedBox(height: 8),
-                  Text(
+                  const Text(
                     'Menu',
                     style: TextStyle(color: Colors.white70, fontSize: 16),
                   ),
@@ -121,13 +141,7 @@ class MainMenu extends StatelessWidget {
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
-            // Logo below app bar
-            // Image.asset(
-            //   'assets/logo.png', // Replace with your logo asset path
-            //   height: 100,
-            // ),
-            const SizedBox(height: 24), // Spacing between logo and buttons
-
+            const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
@@ -169,9 +183,7 @@ class MainMenu extends StatelessWidget {
                 ),
               ],
             ),
-
-            const SizedBox(height: 40), // Spacing between rows
-
+            const SizedBox(height: 40),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [

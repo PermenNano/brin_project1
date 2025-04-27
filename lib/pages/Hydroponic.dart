@@ -17,41 +17,61 @@ class _HydroponicState extends State<Hydroponic> {
   Map<String, dynamic>? latestData;
   bool isLoading = true;
   String? errorMessage;
+  String selectedLocation = '10'; // Default location
+  List<String> locations = ['10', '11']; // Your farm IDs
+
+  // Map to store the latest data for each location
+  Map<String, Map<String, dynamic>> allLatestData = {};
 
   @override
   void initState() {
     super.initState();
-    fetchLatestSensorData();
+    fetchInitialData();
   }
 
-  Future<void> fetchLatestSensorData() async {
+  Future<void> fetchInitialData() async {
+    for (final location in locations) {
+      await fetchLatestSensorData(location);
+    }
+    // After fetching data for all locations, set the initial display data
     setState(() {
-      isLoading = true;
+      latestData = allLatestData[selectedLocation];
+      isLoading = false;
+    });
+  }
+
+  Future<void> fetchLatestSensorData(String farmId) async {
+    setState(() {
+      if (allLatestData[farmId] == null) {
+        // Only show loading if data for this location hasn't been fetched yet
+        isLoading = true;
+      }
       errorMessage = null;
     });
 
     try {
       final formattedDate = DateFormat('yyyy-MM-dd').format(widget.date);
       final url = Uri.parse(
-          'http://10.0.2.2:3000/sensor_data?farm=${widget.farmId}&date=$formattedDate');
+          'http://10.0.2.2:3000/sensor_data?farm_id=$farmId'); // Fetch for specific farm_id
 
       final response = await http.get(url);
 
       if (response.statusCode == 200) {
-        // Parse response as List<dynamic>
         List<dynamic> dataList = json.decode(response.body);
 
         if (dataList.isEmpty) {
           setState(() {
-            errorMessage = "No data available for selected date.";
-            isLoading = false;
+            if (locations.length == 1 || allLatestData.isEmpty) {
+              errorMessage = "No data available for location $farmId.";
+            }
+            if (allLatestData.isEmpty) {
+              isLoading = false;
+            }
           });
           return;
         }
 
-        // Group data by sensor_id and find the latest record for each
         Map<String, Map<String, dynamic>> latestRecords = {};
-
         for (var item in dataList) {
           String sensorId = item['sensor_id'];
           DateTime timestamp = DateTime.parse(item['timestamp']);
@@ -63,20 +83,30 @@ class _HydroponicState extends State<Hydroponic> {
         }
 
         setState(() {
-          latestData = latestRecords;
-          isLoading = false;
+          allLatestData[farmId] = latestRecords;
+          if (selectedLocation == farmId) {
+            latestData = latestRecords;
+          }
+          // Only set loading to false after all initial data is fetched
+          if (allLatestData.length == locations.length) {
+            isLoading = false;
+          }
         });
       } else {
         setState(() {
           errorMessage =
-              "Failed to load data: ${response.statusCode} ${response.reasonPhrase}";
-          isLoading = false;
+              "Failed to load data for location $farmId: ${response.statusCode} ${response.reasonPhrase}";
+          if (allLatestData.isEmpty) {
+            isLoading = false;
+          }
         });
       }
     } catch (e) {
       setState(() {
-        errorMessage = "Error fetching data: $e";
-        isLoading = false;
+        errorMessage = "Error fetching data for location $farmId: $e";
+        if (allLatestData.isEmpty) {
+          isLoading = false;
+        }
       });
     }
   }
@@ -117,60 +147,101 @@ class _HydroponicState extends State<Hydroponic> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("gnss")),
-      body: Center(
-        child: isLoading
-            ? CircularProgressIndicator()
-            : errorMessage != null
-                ? Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Text(
-                      errorMessage!,
-                      style: const TextStyle(color: Colors.red, fontSize: 16),
-                    ),
-                  )
-                : GridView.count(
-                    crossAxisCount: 2,
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      buildSensorCard(
-                        "Air Humidity",
-                        "${latestData?['']?['value'] ?? '-'}",
-                        formatTimestamp(latestData?['']?['timestamp']),
-                        '/humidity',
-                      ),
-                      buildSensorCard(
-                        "Hygrometer",
-                        "${latestData?['']?['value'] ?? '-'}",
-                        formatTimestamp(latestData?['']?['timestamp']),
-                        '/humidity',
-                      ),
-                      buildSensorCard(
-                        "pH",
-                        "${latestData?['']?['value'] ?? '-'}",
-                        formatTimestamp(latestData?['']?['timestamp']),
-                        '/ph',
-                      ),
-                      buildSensorCard(
-                        "TDS",
-                        "${latestData?['']?['value'] ?? '-'}",
-                        formatTimestamp(latestData?['']?['timestamp']),
-                        '/ph',
-                      ),
-                      buildSensorCard(
-                        "Water Temperature",
-                        "${latestData?['']?['value'] ?? '-'}",
-                        formatTimestamp(latestData?['']?['timestamp']),
-                        '/temperature',
-                      ),
-                      buildSensorCard(
-                        "Air Temperature",
-                        "${latestData?['']?['value'] ?? '-'}",
-                        formatTimestamp(latestData?['']?['timestamp']),
-                        '/temperature',
-                      ),
-                    ],
-                  ),
+      appBar: AppBar(
+        title: const Text("Hidroponik"),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: DropdownButtonFormField<String>(
+              value: selectedLocation,
+              onChanged: (String? newValue) {
+                setState(() {
+                  selectedLocation = newValue!;
+                  latestData = allLatestData[selectedLocation];
+                });
+              },
+              items: locations.map<DropdownMenuItem<String>>((String value) {
+                return DropdownMenuItem<String>(
+                  value: value,
+                  child: Text(value),
+                );
+              }).toList(),
+              decoration: InputDecoration(
+                labelText: "Select Location",
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  borderSide: const BorderSide(color: Colors.purple),
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Center(
+              child: isLoading && allLatestData.isEmpty
+                  ? CircularProgressIndicator()
+                  : errorMessage != null && allLatestData.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Text(
+                            errorMessage!,
+                            style: const TextStyle(color: Colors.red, fontSize: 16),
+                          ),
+                        )
+                      : latestData == null
+                          ? const Padding(
+                              padding: EdgeInsets.all(20),
+                              child: Text("No data available for the selected location."),
+                            )
+                          : GridView.count(
+                              crossAxisCount: 2,
+                              padding: const EdgeInsets.all(12),
+                              children: [
+                                buildSensorCard(
+                                  "Air Humidity",
+                                  "${latestData?['HUM01']?['value'] ?? '-'}",
+                                  formatTimestamp(latestData?['HUM01']?['timestamp']),
+                                  '/humidity',
+                                ),
+                                buildSensorCard(
+                                  "RSS",
+                                  "${latestData?['RSS01']?['value'] ?? '-'}",
+                                  formatTimestamp(latestData?['RSS01']?['timestamp']),
+                                  '/humidity',
+                                ),
+                                buildSensorCard(
+                                  "pH",
+                                  "${latestData?['PHO01']?['value'] ?? '-'}",
+                                  formatTimestamp(latestData?['PHO01']?['timestamp']),
+                                  '/ph',
+                                ),
+                                buildSensorCard(
+                                  "TDS",
+                                  "${latestData?['TDS01']?['value'] ?? '-'}",
+                                  formatTimestamp(latestData?['TDS01']?['timestamp']),
+                                  '/ph',
+                                ),
+                                buildSensorCard(
+                                  "Water Temperature",
+                                  "${latestData?['TEM01']?['value'] ?? '-'}",
+                                  formatTimestamp(latestData?['TEM01']?['timestamp']),
+                                  '/temperature',
+                                ),
+                                buildSensorCard(
+                                  "Air Temperature",
+                                  "${latestData?['TEM02']?['value'] ?? '-'}",
+                                  formatTimestamp(latestData?['TEM02']?['timestamp']),
+                                  '/temperature',
+                                ),
+                              ],
+                            ),
+            ),
+          ),
+        ],
       ),
     );
   }
