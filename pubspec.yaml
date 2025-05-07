@@ -5,17 +5,34 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ">=2.18.0 <3.0.0"
+  sdk: ">=3.0.0 <4.0.0"  # Updated for Flutter 3.13+ compatibility
 
 dependencies:
-
   flutter:
     sdk: flutter
   http: ^1.1.0
   intl: ^0.18.0
-  fl_chart: 
   flutter_dotenv: ^5.2.0
+  fl_chart:
+        ^0.68.0
+    # git:
+    #   url: https://github.com/imaNNeoFighT/fl_chart.git
+    #   ref: main      # Use latest main branch commit
 
+  # Add the google_maps_flutter dependency
+  google_maps_flutter: ^2.5.0 # Or the latest version
+
+  # fonts: # commented out to fix the error
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -26,3 +43,14 @@ flutter:
   assets:
     - .env
     - assets/images/
+  # fonts: # commented out to fix the error
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
