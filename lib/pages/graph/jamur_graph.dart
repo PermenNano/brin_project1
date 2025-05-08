@@ -32,23 +32,36 @@ class _JamurGraphState extends State<JamurGraph> {
 
   final Map<String, Color> _sensorColors = {
     'TEM01': Colors.orange,
-    'HUM01': Colors.blueGrey,
+    'TEM02': Colors.deepOrange,
+    'HUM01': Colors.blue,
+    'HUM02': Colors.lightBlue,
+    'HUM03': Colors.blueGrey,
     'CO001': Colors.teal,
-    'PHO01': Colors.greenAccent,
+    'PH001': Colors.green,
+    'PH011': Colors.lightGreen,
     'CE001': Colors.yellow,
-    'NHO01': Colors.brown,
+    'NH001': Colors.brown,
     'OX001': Colors.cyan,
-    'LUX01': Colors.purpleAccent,
-    'WINS1': Colors.lightBlueAccent,
-    'WINA1': Colors.pinkAccent,
-    'RAIN1': Colors.indigo,
-    'POT01': Colors.deepOrange,
+    'LUX01': Colors.purple,
+    'PRED1': Colors.indigo,
+    'PRE02': Colors.deepPurple,
+    'RAIN1': Colors.blueAccent,
+    'RAIN2': Colors.lightBlueAccent,
+    'WINA1': Colors.pink,
+    'WIND1': Colors.pinkAccent,
+    'WINS1': Colors.red,
+    'POT01': Colors.amber,
+    'NI001': Colors.lime,
+    'CC001': Colors.grey,
+    'CC002': Colors.blueGrey,
   };
 
   final List<String> _jamurSensorIds = [
-    'TEM01', 'HUM01', 'CO001', 'PHO01', 'CE001', 
-    'NHO01', 'OX001', 'LUX01', 'WINS1', 'WINA1', 
-    'RAIN1', 'POT01'
+    'TEM01', 'TEM02', 'HUM01', 'HUM02', 'HUM03',
+    'CO001', 'PH001', 'PH011', 'CE001', 'NH001',
+    'OX001', 'LUX01', 'PRED1', 'PRE02', 'RAIN1',
+    'RAIN2', 'WINA1', 'WIND1', 'WINS1', 'POT01',
+    'NI001', 'CC001', 'CC002'
   ];
 
   @override
@@ -111,7 +124,7 @@ class _JamurGraphState extends State<JamurGraph> {
           .map((id) => DropdownMenuItem(
                 value: id,
                 child: Text(_sensorNameMap[id] ?? id),
-               ))
+              ))
           .toList(),
       onChanged: (val) => setState(() => _selectedSensorId = val),
     );
@@ -280,17 +293,48 @@ class _JamurGraphState extends State<JamurGraph> {
         final dataList = jsonData['data'];
 
         if (dataList != null && dataList is List) {
+          // Default sensor names
+          _sensorNameMap = {
+            'TEM01': 'Air Temperature 1',
+            'TEM02': 'Air Temperature 2',
+            'HUM01': 'Air Humidity 1',
+            'HUM02': 'Air Humidity 2',
+            'HUM03': 'Air Humidity 3',
+            'CO001': 'CO2 Level',
+            'PH001': 'pH Level 1',
+            'PH011': 'pH Level 2',
+            'CE001': 'EC Level',
+            'NH001': 'NH4 Level',
+            'OX001': 'Dissolved Oxygen',
+            'LUX01': 'Light Intensity',
+            'PRED1': 'Precipitation',
+            'PRE02': 'Pressure',
+            'RAIN1': 'Rainfall 1',
+            'RAIN2': 'Rainfall 2',
+            'WINA1': 'Wind Angle',
+            'WIND1': 'Wind Direction',
+            'WINS1': 'Wind Speed',
+            'POT01': 'Soil Temperature',
+            'NI001': 'Soil Moisture',
+            'CC001': 'Carbon Monoxide',
+            'CC002': 'Carbon Dioxide',
+          };
+
+          // Override with any custom names from the API
+          for (var sensor in dataList) {
+            if (sensor['sensor_id'] != null && sensor['name'] != null) {
+              _sensorNameMap[sensor['sensor_id'].toString()] = sensor['name'].toString();
+            }
+          }
+
           _availableSensorsForFarm = dataList
               .map<String>((sensor) => sensor['sensor_id']?.toString() ?? '')
               .where((id) => id.isNotEmpty)
               .toList();
 
-          _sensorNameMap = Map.fromEntries(
-              dataList.where((sensor) => sensor['sensor_id'] != null && sensor.containsKey('name') && sensor['name'] != null)
-                  .map((sensor) => MapEntry(sensor['sensor_id'].toString(), sensor['name'].toString())),
-          );
-
-          _availableSensorsFiltered = _availableSensorsForFarm.where((id) => _jamurSensorIds.contains(id)).toList();
+          _availableSensorsFiltered = _availableSensorsForFarm
+              .where((id) => _jamurSensorIds.contains(id))
+              .toList();
 
           if (widget.sensorId != null && _availableSensorsFiltered.contains(widget.sensorId)) {
             _selectedSensorId = widget.sensorId;
@@ -528,6 +572,30 @@ class _JamurGraphState extends State<JamurGraph> {
     );
   }
 
+  Widget bottomTitleWidgets(double value, TitleMeta meta) {
+    const style = TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 10);
+    if (sensorData.isEmpty || value < sensorData.first.x || value > sensorData.last.x) {
+      return const SizedBox.shrink();
+    }
+    final date = DateTime.fromMillisecondsSinceEpoch(value.toInt());
+    final formattedDate = DateFormat('MM-dd HH:mm').format(date.toLocal());
+    return SideTitleWidget(
+      axisSide: meta.axisSide, 
+      space: 8, 
+      child: Text(formattedDate, style: style, textAlign: TextAlign.center),
+    );
+  }
+
+  Widget leftTitleWidgets(double value, TitleMeta meta) {
+    const style = TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 12);
+    final text = value.toStringAsFixed(value.abs() > 10 ? 0 : 1);
+    return SideTitleWidget(
+      axisSide: meta.axisSide,
+      space: 8,
+      child: Text(text, style: style),
+    );
+  }
+
   Widget _buildNoDataOrInitialScreen() {
     if (errorMessage.isNotEmpty) {
       return Center(
@@ -561,30 +629,6 @@ class _JamurGraphState extends State<JamurGraph> {
 
     return const Center(
       child: CircularProgressIndicator(),
-    );
-  }
-
-  Widget bottomTitleWidgets(double value, TitleMeta meta) {
-    const style = TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 10);
-    if (sensorData.isEmpty || value < sensorData.first.x || value > sensorData.last.x) {
-      return const SizedBox.shrink();
-    }
-    final date = DateTime.fromMillisecondsSinceEpoch(value.toInt());
-    final formattedDate = DateFormat('MM-dd HH:mm').format(date.toLocal());
-    return SideTitleWidget(
-      axisSide: meta.axisSide, 
-      space: 8, 
-      child: Text(formattedDate, style: style, textAlign: TextAlign.center),
-    );
-  }
-
-  Widget leftTitleWidgets(double value, TitleMeta meta) {
-    const style = TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 12);
-    final text = value.toStringAsFixed(value.abs() > 10 ? 0 : 1);
-    return SideTitleWidget(
-      axisSide: meta.axisSide,
-      space: 8,
-      child: Text(text, style: style),
     );
   }
 }
