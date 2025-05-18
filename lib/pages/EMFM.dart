@@ -1,3 +1,4 @@
+import 'package:brin_project1/pages/graph/EMFM_graph.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
@@ -7,11 +8,14 @@ class EMFM extends StatefulWidget {
   final DateTime date;
   final String farmId;
 
-  const EMFM({Key? key, required this.date, required this.farmId})
-      : super(key: key);
+  const EMFM({
+    super.key,
+    required this.date,
+    required this.farmId,
+  });
 
   @override
-  _EMFMState createState() => _EMFMState();
+  State<EMFM> createState() => _EMFMState();
 }
 
 class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
@@ -21,14 +25,76 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
   final Map<String, Map<String, dynamic>> _gnssLatestData = {};
   String? _selectedLocation;
 
-  final List<String> _baseSensorTypes = [
-    'ALT', 'DAT', 'FXO', 'GSE', 'HDO', 
-    'LAT', 'LON', 'MVR', 'PDO', 'SAT',
-    'SCO', 'SNR', 'UTC', 'VDO'
-  ];
-
-  final int _numberOfEmptyCards = 4;
-  final Map<String, String> _sensorNameMap = {};
+  final Map<String, List<String>> _knownGnssSensors = const {
+    'GNSS1': [
+      'DAT01',
+      'LON01',
+      'ALT01',
+      'LAT01',
+      'HD01',
+      'SCO01',
+      'SNR01',
+      'UTC01',
+      'GSE01',
+      'SAT01',
+      'PDO01',
+      'VDO01',
+      'FXQ01',
+      'MVR01',
+    ],
+    'GNSS2': [
+      'UTC02',
+      'ALT02',
+      'SCO02',
+      'MVR02',
+      'FXQ02',
+      'HDO02',
+      'GSE02',
+      'VDO02',
+      'HUM02',
+      'LON02',
+      'SAT02',
+      'LAT02',
+      'DAT02',
+      'TEM02',
+      'PDO02',
+      'SNR02',
+    ],
+    'GNSS3': [
+      'DAT01',
+      'LON01',
+      'ALT01',
+      'LAT01',
+      'HD01',
+      'SCO01',
+      'SNR01',
+      'UTC01',
+      'GSE01',
+      'SAT01',
+      'PDO01',
+      'VDO01',
+      'FXQ01',
+      'MVR01',
+    ],
+    'GNSS4': [
+      'UTC02',
+      'ALT02',
+      'SCO02',
+      'MVR02',
+      'FXQ02',
+      'HDO02',
+      'GSE02',
+      'VDO02',
+      'HUM02',
+      'LON02',
+      'SAT02',
+      'LAT02',
+      'DAT02',
+      'TEM02',
+      'PDO02',
+      'SNR02',
+    ],
+  };
 
   @override
   bool get wantKeepAlive => true;
@@ -36,7 +102,12 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
   @override
   void initState() {
     super.initState();
-    _fetchInitialData();
+    if (_knownGnssSensors.isEmpty) {
+      _isLoading = false;
+      _errorMessage = "No known GNSS sensors defined in the app.";
+    } else {
+      _fetchInitialData();
+    }
   }
 
   Future<void> _fetchInitialData() async {
@@ -46,32 +117,83 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
       _errorMessage = null;
       _gnssLatestData.clear();
       _locations.clear();
-      _sensorNameMap.clear();
+      _selectedLocation = null;
     });
 
     try {
-      // First fetch all available GNSS devices
-      final gnssDevicesResponse = await http.get(
-        Uri.parse('http://10.0.2.2:3000/gnss_devices')
-      ).timeout(const Duration(seconds: 20));
+      final gnssDevicesResponse = await http
+          .get(Uri.parse('http://192.168.1.2:3000/gnss_devices'))
+          .timeout(const Duration(seconds: 20));
 
       if (!mounted) return;
 
       if (gnssDevicesResponse.statusCode == 200) {
         final decodedBody = json.decode(gnssDevicesResponse.body);
-        if (decodedBody is Map && decodedBody['data'] is List) {
-          final devices = (decodedBody['data'] as List).cast<String>();
-          
-          // Then fetch latest data for each GNSS device
-          for (final gnssId in devices) {
-            await _fetchGnssLatestData(gnssId);
+        List<String> devices = [];
+
+        if (decodedBody is Map &&
+            decodedBody.containsKey('data') &&
+            decodedBody['data'] is List) {
+          devices = (decodedBody['data'] as List)
+              .map((item) {
+                if (item is Map && item.containsKey('gnss_id')) {
+                  return item['gnss_id'].toString();
+                }
+                return null;
+              })
+              .whereType<String>()
+              .toList();
+        } else {
+          if (mounted) {
+            setState(() {
+              _errorMessage =
+                  "Failed to parse GNSS devices data from backend. Unexpected format.";
+              _isLoading = false;
+            });
           }
+          return;
         }
+
+        if (devices.isNotEmpty) {
+          final availableKnownLocations = devices
+              .where((device) => _knownGnssSensors.containsKey(device))
+              .toList();
+
+          if (availableKnownLocations.isNotEmpty) {
+            _locations.addAll(availableKnownLocations);
+
+            List<Future<void>> fetchFutures = [];
+            for (final gnssId in availableKnownLocations) {
+              fetchFutures.add(_fetchGnssLatestData(gnssId));
+            }
+
+            await Future.wait(fetchFutures);
+
+            if (_locations.contains('GNSS1')) {
+              _selectedLocation = 'GNSS1';
+            } else {
+              _selectedLocation = _locations.isNotEmpty ? _locations.first : null;
+            }
+          } else {
+            setState(() {
+              _errorMessage = "No known GNSS devices found from backend.";
+            });
+          }
+        } else {
+          setState(() {
+            _errorMessage = "No GNSS devices available from backend.";
+          });
+        }
+      } else {
+        setState(() {
+          _errorMessage =
+              "Error fetching GNSS devices from backend: Status ${gnssDevicesResponse.statusCode}";
+        });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = "Error fetching initial data: ${e.toString()}";
+          _errorMessage = "Network error fetching GNSS devices: ${e.toString()}";
         });
       }
     }
@@ -79,10 +201,7 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
     if (mounted) {
       setState(() {
         _isLoading = false;
-        _updateErrorMessage();
-        if (_locations.isNotEmpty) {
-          _selectedLocation = _locations.first;
-        }
+        _updateStatusMessage();
       });
     }
   }
@@ -91,38 +210,56 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
     if (!mounted) return;
 
     try {
-      final url = Uri.parse('http://10.0.2.2:3000/gnss_latest_data?gnss_id=$gnssId');
+      final url = Uri.parse(
+          'http://192.168.1.2:3000/gnss_latest_data?gnss_id=$gnssId');
+
       final response = await http.get(url).timeout(const Duration(seconds: 20));
 
       if (!mounted) return;
 
       if (response.statusCode == 200) {
-        final decodedBody = json.decode(response.body);
-        if (decodedBody is Map && decodedBody['data'] is List) {
-          final dataList = (decodedBody['data'] as List).cast<Map<String, dynamic>>();
-          
-          final Map<String, dynamic> latestData = {};
-          for (var item in dataList) {
-            if (item['sensor_id'] != null) {
-              latestData[item['sensor_id'] as String] = item;
-              _sensorNameMap[item['sensor_id'] as String] = 
-                  item['sensor_name'] ?? item['sensor_id'] as String;
-            }
-          }
+        dynamic decodedBody = json.decode(response.body);
+        List<dynamic> dataList = [];
 
-          if (mounted) {
-            setState(() {
-              _gnssLatestData[gnssId] = latestData;
-              _locations.add(gnssId);
-            });
+        if (decodedBody is Map<String, dynamic> &&
+            decodedBody.containsKey('data') &&
+            decodedBody['data'] is List) {
+          dataList = decodedBody['data'] as List;
+        } else {
+          print(
+              "Unexpected response format for latest data for GNSS $gnssId: $decodedBody");
+          if (mounted) _gnssLatestData[gnssId] = {};
+          return;
+        }
+
+        Map<String, dynamic> latestRecords = {};
+        for (var item in dataList) {
+          if (item is! Map<String, dynamic> ||
+              item['sensor_id'] == null ||
+              item['timestamp'] == null ||
+              item['value'] == null) {
+            print("Skipping invalid data item for GNSS $gnssId: $item");
+            continue;
           }
+          String sensorId = item['sensor_id'] as String;
+
+          latestRecords[sensorId] = item;
+        }
+
+        if (mounted) {
+          _gnssLatestData[gnssId] = latestRecords;
+        }
+      } else {
+        print(
+            "Failed to load latest data for GNSS $gnssId: ${response.statusCode} ${response.reasonPhrase ?? 'Unknown Error'}");
+        if (mounted) {
+          _gnssLatestData[gnssId] = {};
         }
       }
     } catch (e) {
+      print("Error fetching latest data for GNSS $gnssId: $e");
       if (mounted) {
-        setState(() {
-          _gnssLatestData[gnssId] = {};
-        });
+        _gnssLatestData[gnssId] = {};
       }
     }
   }
@@ -134,87 +271,150 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
       final dtLocal = dtUtc.toLocal();
       return DateFormat('dd-MM-yyyy HH:mm:ss').format(dtLocal);
     } catch (_) {
+      print('Failed to parse timestamp for formatting: $ts');
       return ts ?? '-';
     }
   }
 
-  String _getSensorIdForGnss(String baseType, String gnssId) {
-    final gnssNumber = gnssId.replaceAll('GNSS', '');
-    return '${baseType}${gnssNumber.padLeft(2, '0')}';
-  }
-
   String _getSensorTitle(String sensorId) {
-    final sensorNames = {
+    final sensorNames = const {
       'ALT': 'Altitude',
       'DAT': 'Date',
-      'FXO': 'Fix Quality',
+      'FXQ': 'Fix Quality',
       'GSE': 'Ground Speed',
       'HDO': 'HDOP',
+      'HUM': 'Humidity',
       'LAT': 'Latitude',
       'LON': 'Longitude',
       'MVR': 'Movement',
       'PDO': 'PDOP',
       'SAT': 'Satellites',
-      'SCO': 'Satellites Used',
+      'SCO': 'Course',
       'SNR': 'Signal Quality',
+      'TEM': 'Temperature',
       'UTC': 'UTC Time',
       'VDO': 'VDOP',
+      'CO': 'Carbon',
+      'CE': 'EC',
+      'NH': 'Ammonium',
+      'OX': 'Oxygen',
+      'LUX': 'Light',
+      'PRE': 'Pressure',
+      'RAIN': 'Rainfall',
+      'WIN': 'Wind',
+      'NI': 'Soil Moisture',
+      'POT': 'Soil Temp',
+      'CC': 'Carbon',
+      'PH': 'pH',
     };
-
     final baseType = sensorId.length >= 3 ? sensorId.substring(0, 3) : sensorId;
-    return sensorNames[baseType] ?? sensorId;
+    final sensorNumber = sensorId.length > 3 ? sensorId.substring(3) : '';
+
+    if (sensorNames.containsKey(baseType)) {
+      final genericName = sensorNames[baseType]!;
+      if (genericName.contains(baseType) || genericName == baseType || sensorNumber.isEmpty) {
+        return '$genericName $sensorNumber'.trim();
+      } else {
+        return '$genericName$sensorNumber';
+      }
+    }
+
+    return sensorId;
   }
 
-  void _updateErrorMessage() {
+  void _updateStatusMessage() {
+    if (_isLoading) {
+      _errorMessage = null;
+      return;
+    }
+
     if (_locations.isEmpty) {
       _errorMessage = "No GNSS locations available.";
-    } else if (_gnssLatestData.isEmpty && !_isLoading) {
-      _errorMessage = "Could not retrieve data for any location.";
-    } else if (_selectedLocation == null && !_isLoading) {
-      _errorMessage = "No GNSS location selected.";
-    } else if (!_gnssLatestData.containsKey(_selectedLocation) && !_isLoading) {
-      _errorMessage = "Data for GNSS Location $_selectedLocation not loaded.";
-    } else if ((_gnssLatestData[_selectedLocation] == null ||
-            _gnssLatestData[_selectedLocation]!.isEmpty) &&
-        !_isLoading) {
-      _errorMessage = "No sensor data available for GNSS $_selectedLocation.";
-    } else {
-      _errorMessage = null;
+      return;
     }
+
+    if (_selectedLocation == null) {
+      _errorMessage = "No GNSS location selected.";
+      return;
+    }
+
+    final selectedLocationData = _gnssLatestData[_selectedLocation];
+    if (selectedLocationData == null || selectedLocationData.isEmpty) {
+      final knownSensorsForSelectedLocation =
+          _knownGnssSensors[_selectedLocation];
+
+      if (knownSensorsForSelectedLocation == null ||
+          knownSensorsForSelectedLocation.isEmpty) {
+        _errorMessage = "No known sensors defined for ${_selectedLocation!}.";
+      } else {
+        _errorMessage =
+            "No sensor data available for selected location ${_selectedLocation!}.";
+      }
+      return;
+    }
+
+    _errorMessage = null;
+  }
+
+  Widget _buildStatusWidget() {
+    if (_isLoading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(20.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8.0),
+        child: Text(
+          _errorMessage!,
+          style: const TextStyle(color: Colors.red, fontSize: 16),
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
   }
 
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    
-    final List<Widget> sensorCards = [];
-    
-    if (_selectedLocation != null && _gnssLatestData.containsKey(_selectedLocation)) {
-      for (final baseType in _baseSensorTypes) {
-        final sensorId = _getSensorIdForGnss(baseType, _selectedLocation!);
-        final sensorData = _gnssLatestData[_selectedLocation]?[sensorId];
-        
-        sensorCards.add(
-          _buildSensorCard(
-            _getSensorTitle(sensorId),
-            sensorData?['value']?.toString() ?? '-',
-            _formatTimestamp(sensorData?['timestamp']),
-            sensorId,
-            sensorData != null ? () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Showing graph for $sensorId')),
-              );
-            } : null,
-          ),
-        );
-      }
-    }
 
-    // Add empty cards to fill the grid
-    final remainingSlots = _baseSensorTypes.length % 2 == 0 ? 0 : 1;
-    for (int i = 0; i < remainingSlots + _numberOfEmptyCards; i++) {
-      sensorCards.add(_buildEmptyCard());
-    }
+    final selectedLocationData = _gnssLatestData[_selectedLocation] ?? {};
+
+    final List<String> sensorIdsToDisplay = _selectedLocation != null
+        ? (_knownGnssSensors[_selectedLocation] ?? [])
+        : [];
+
+    final List<Widget> sensorCards = sensorIdsToDisplay.map((sensorId) {
+      final sensorData = selectedLocationData[sensorId];
+      final bool isTappable = sensorData != null;
+
+      return _buildSensorCard(
+        _getSensorTitle(sensorId),
+        sensorData?['value']?.toString() ?? '-',
+        _formatTimestamp(sensorData?['timestamp']),
+        sensorId,
+        isTappable
+            ? () {
+                FocusScope.of(context).unfocus();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => EMFMGraph(
+                      gnssId: _selectedLocation!,
+                      sensorId: sensorId,
+                    ),
+                  ),
+                );
+              }
+            : null,
+      );
+    }).toList();
 
     return Scaffold(
       appBar: AppBar(
@@ -247,28 +447,42 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
                         const SizedBox(height: 4),
                         DropdownButtonFormField<String>(
                           decoration: InputDecoration(
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(style: BorderStyle.none),
+                            ),
                             enabledBorder: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none,
+                              borderSide: const BorderSide(style: BorderStyle.none),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: Colors.blueAccent, width: 1.5),
+                            ),
+                            errorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: Colors.red, width: 1.5),
+                            ),
+                            focusedErrorBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: Colors.redAccent, width: 2.0),
                             ),
                             filled: true,
                             fillColor: const Color.fromARGB(255, 114, 114, 114),
                             contentPadding: const EdgeInsets.symmetric(
                                 horizontal: 12, vertical: 10),
+                            isDense: true,
                           ),
                           value: _selectedLocation,
-                          icon: const Icon(Icons.arrow_downward,
-                              color: Colors.white),
-                          dropdownColor: const Color.fromARGB(255, 114, 114, 114),
+                          icon: const Icon(Icons.arrow_downward, color: Colors.white),
                           elevation: 16,
-                          style: const TextStyle(
-                              color: Colors.white, fontSize: 16),
+                          style: const TextStyle(color: Colors.white, fontSize: 16),
+                          dropdownColor: const Color.fromARGB(255, 114, 114, 114),
                           onChanged: (String? newValue) {
-                            if (newValue != null &&
-                                newValue != _selectedLocation) {
+                            if (newValue != null && newValue != _selectedLocation) {
                               setState(() {
                                 _selectedLocation = newValue;
-                                _updateErrorMessage();
+                                _updateStatusMessage();
                               });
                             }
                           },
@@ -282,33 +496,18 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
                       ],
                     ),
                   ),
-                if (_isLoading)
-                  const Center(
-                      child: Padding(
-                    padding: EdgeInsets.all(20.0),
-                    child: CircularProgressIndicator(),
-                  )),
-                if (_errorMessage != null && !_isLoading)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0),
-                    child: Text(
-                      _errorMessage!,
-                      style: const TextStyle(color: Colors.red, fontSize: 16),
-                      textAlign: TextAlign.center,
+                _buildStatusWidget(),
+                if (!_isLoading && _errorMessage == null && _selectedLocation != null)
+                  if (sensorIdsToDisplay.isNotEmpty)
+                    GridView.count(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 8.0,
+                      mainAxisSpacing: 8.0,
+                      childAspectRatio: 0.9,
+                      children: sensorCards,
                     ),
-                  ),
-                if (!_isLoading &&
-                    _errorMessage == null &&
-                    _locations.isNotEmpty)
-                  GridView.count(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 8.0,
-                    mainAxisSpacing: 8.0,
-                    childAspectRatio: 0.9,
-                    children: sensorCards,
-                  ),
               ],
             ),
           ),
@@ -318,14 +517,19 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
   }
 
   Widget _buildSensorCard(
-      String title, String value, String? timestamp, String sensorId,
-      VoidCallback? onTap) {
+      String title,
+      String value,
+      String? timestamp,
+      String sensorId,
+      VoidCallback? onTap
+      ) {
     return InkWell(
       onTap: onTap,
       child: Card(
         elevation: 3,
         margin: const EdgeInsets.all(6),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
         color: onTap != null ? Theme.of(context).cardColor : Colors.grey[800],
         child: Padding(
           padding: const EdgeInsets.all(12),
@@ -373,47 +577,18 @@ class _EMFMState extends State<EMFM> with AutomaticKeepAliveClientMixin {
               if (onTap != null)
                 Text(
                   'More Info',
-                  style:
-                      Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.blueAccent),
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelLarge
+                      ?.copyWith(color: Colors.blueAccent),
+                ),
+              if (onTap == null)
+                const Text(
+                  'No Data',
+                  style: TextStyle(color: Colors.white38),
                 ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildEmptyCard() {
-    return Card(
-      elevation: 3,
-      margin: const EdgeInsets.all(6),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: Colors.grey[850],
-      child: const Padding(
-        padding: EdgeInsets.all(12),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Icon(Icons.info_outline, size: 30, color: Colors.white54),
-            SizedBox(height: 8),
-            Text(
-              'No Data Available',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-                color: Colors.white54,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            SizedBox(height: 4),
-            Text(
-              'Placeholder',
-              style: TextStyle(fontSize: 12, color: Colors.white38),
-              textAlign: TextAlign.center,
-            ),
-            SizedBox(height: 8),
-          ],
         ),
       ),
     );

@@ -1,118 +1,461 @@
+import 'dart:async' show StreamSubscription, TimeoutException;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
+import 'package:typed_data/src/typed_buffer.dart';
 import 'dart:convert';
-// Import the separate FisheryGraph page for navigation
 import 'graph/fishery_graph.dart';
+import 'package:mqtt_client/mqtt_client.dart';
+import 'package:mqtt_client/mqtt_server_client.dart';
+import 'dart:io';
 
-
-// Represents the Fishery sector page, displaying latest sensor readings for selected farms.
 class Fishery extends StatefulWidget {
-  // Although 'date' is a required parameter from main.dart, it's not currently used in this page's logic.
   final DateTime date;
-  // 'farmId' is passed from main.dart, potentially containing multiple IDs like '60, 61'.
-  // This page handles multiple farms internally based on its own _locations list.
   final String farmId;
 
-  const Fishery({Key? key, required this.date, required this.farmId}) : super(key: key);
+  const Fishery({Key? key, required this.date, required this.farmId})
+      : super(key: key);
 
   @override
   _FisheryState createState() => _FisheryState();
 }
 
-class _FisheryState extends State<Fishery> with AutomaticKeepAliveClientMixin {
-  // Mixin to keep the state alive when navigating between tabs (like in MainMenu)
-
-  // Stores the latest data map for the *currently selected* farm
-  // Map structure: sensorId -> { 'sensor_id': '...', 'value': ..., 'timestamp': '...' }
-  Map<String, Map<String, dynamic>>? _latestData;
-
-  // Loading state for the initial data fetch operation
+class _FisheryState extends State<Fishery>
+    with AutomaticKeepAliveClientMixin, SingleTickerProviderStateMixin {
   bool _isLoading = true;
-
-  // Message to display in case of errors during fetch or if no data is available
   String? _errorMessage;
-
-  // List of farm IDs relevant to this Fishery page.
-  // This list determines which farms are available in the dropdown and whose data is fetched.
   final List<String> _locations = ['60', '61'];
-
-  // Stores the fetched latest data for *all* locations defined in _locations.
-  // Map structure: farmId -> (Map: sensorId -> data item)
   final Map<String, Map<String, Map<String, dynamic>>> _allLatestData = {};
-
-  // The farm ID currently selected in the dropdown.
-  String _selectedLocation = '60'; // Default to the first farm (Farm 60)
-
-  // List of sensor IDs expected to be displayed on the cards.
-  // This list determines which cards are built and in what order.
+  String _selectedLocation = '60';
   final List<String> _sensorIdsToDisplay = [
-    'DO001', // Dissolved Oxygen
-    'HUM01', // Air Humidity
-    'TEM01', // Water Temperature
-    'TEM02', // Air Temperature
-    'RSS01', // pH (Assuming RSS01 is pH)
-    'TDS01', // TDS
-    // Add other sensor IDs here as needed for the cards
+    'DO001',
+    'HUM01',
+    'TEM01',
+    'TEM02',
+    'RSS01',
+    'TDS01',
   ];
-
-  // Number of additional empty cards to display (adjust as needed)
   final int _numberOfEmptyCards = 4;
 
+  late TabController _tabController;
+
+  // MQTT Configuration
+  final String mqttBrokerHost = 'broker.emqx.io';
+  final int mqttBrokerPort = 1883;
+  final String baseMqttClientId = 'mqttx_2875518f';
+  final String setpointMqttTopic = 'topic/06/flutterapp';
+  final List<String> subscriptionTopics = [
+    'topic/06/flutterapp'
+  ];
+
+  MqttServerClient? client;
+  MqttConnectionState mqttConnectionState = MqttConnectionState.disconnected;
+  String _lastMqttMessage = 'No MQTT messages received.';
+
+
+  final TextEditingController _minHumController = TextEditingController();
+  final TextEditingController _maxHumController = TextEditingController();
+  final TextEditingController _minTempController = TextEditingController();
+  final TextEditingController _maxTempController = TextEditingController();
+
+  String _commandStatus = '';
+  StreamSubscription<List<MqttReceivedMessage<MqttMessage>>>? _mqttSubscription;
 
   @override
-  bool get wantKeepAlive => true; // Keep this page's state when not active
-
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    // Determine the initially selected location based on the 'farmId' passed to the widget,
-    // ensuring it's one of the valid _locations.
-    List<String> initialFarmIds = widget.farmId.split(',').map((e) => e.trim()).toList();
+    _tabController = TabController(length: 2, vsync: this);
+
+    List<String> initialFarmIds =
+        widget.farmId.split(',').map((e) => e.trim()).toList();
     _selectedLocation = _locations.firstWhere(
       (loc) => initialFarmIds.contains(loc),
-      // If none of the passed farmIds are in _locations, or _locations is empty, default to the first location or '60'.
       orElse: () => _locations.isNotEmpty ? _locations.first : '60',
     );
 
-    // Start fetching data for all predefined locations when the page initializes.
     if (_locations.isEmpty) {
       _isLoading = false;
       _errorMessage = "No locations defined for this view.";
     } else {
       _fetchInitialData();
     }
+
+    _connectMqtt();
   }
 
   @override
   void dispose() {
-    // Clean up resources here if necessary, although typically not needed for simple HTTP fetches.
+    _tabController.dispose();
+    _minHumController.dispose();
+    _maxHumController.dispose();
+    _minTempController.dispose();
+    _maxTempController.dispose();
+    _mqttSubscription?.cancel();
+    _disconnectMqtt();
     super.dispose();
   }
 
+  Future<void> _connectMqtt() async {
+    if (mqttConnectionState == MqttConnectionState.connecting ||
+        mqttConnectionState == MqttConnectionState.connected) {
+      return;
+    }
 
-  // Fetches data for all predefined locations concurrently.
-  // Calls the function to fetch the latest data for each location.
+    if (mounted) {
+      setState(() {
+        mqttConnectionState = MqttConnectionState.connecting;
+        _commandStatus = 'Connecting to MQTT broker...';
+        _lastMqttMessage = 'No MQTT messages received yet.';
+      });
+    }
+
+    try {
+      client = MqttServerClient(mqttBrokerHost, '${baseMqttClientId}_${DateTime.now().millisecondsSinceEpoch}');
+      client!.port = mqttBrokerPort;
+      client!.logging(on: false);
+      client!.keepAlivePeriod = 60;
+      client!.onDisconnected = _onDisconnected;
+      client!.onConnected = _onConnected;
+      client!.onSubscribed = _onSubscribed;
+      client!.pongCallback = _onPong;
+      client!.autoReconnect = true;
+      client!.resubscribeOnAutoReconnect = true;
+
+      final connMess = MqttConnectMessage()
+          .withClientIdentifier(client!.clientIdentifier)
+          .withWillQos(MqttQos.atLeastOnce)
+          .startClean()
+          .withWillTopic('willtopic')
+          .withWillMessage('Client disconnected unexpectedly')
+          .withWillRetain();
+
+      client!.connectionMessage = connMess;
+
+      await client!.connect().timeout(const Duration(seconds: 15));
+
+      if (client!.connectionStatus?.state == MqttConnectionState.connected) {
+        print('MQTT client connected successfully');
+        if (mounted) {
+          setState(() {
+            mqttConnectionState = MqttConnectionState.connected;
+            _commandStatus = 'Connected to MQTT broker. Ready to send commands.';
+          });
+        }
+        _subscribeToTopics();
+      } else {
+        print('MQTT connection failed with state: ${client!.connectionStatus?.state}');
+        if (mounted) {
+          setState(() {
+            mqttConnectionState = client!.connectionStatus?.state ?? MqttConnectionState.faulted;
+            _commandStatus = 'Connection failed: ${client!.connectionStatus?.state}.';
+          });
+        }
+        _disconnectMqtt();
+      }
+    } on TimeoutException {
+      print('MQTT connection timed out');
+      if (mounted) {
+        setState(() {
+          mqttConnectionState = MqttConnectionState.faulted;
+          _commandStatus = 'Connection timed out. Please check broker address/port or network.';
+        });
+      }
+      _disconnectMqtt();
+    } on SocketException catch (e) {
+      print('MQTT SocketException: $e');
+      if (mounted) {
+        setState(() {
+          mqttConnectionState = MqttConnectionState.faulted;
+          _commandStatus = 'Network error: ${e.message}. Check your connection.';
+        });
+      }
+    } on Exception catch (e) {
+      print('MQTT connection error: $e');
+      if (mounted) {
+        setState(() {
+          mqttConnectionState = MqttConnectionState.faulted;
+          _commandStatus = 'Connection error: ${e.toString()}';
+        });
+      }
+      _disconnectMqtt();
+    }
+  }
+
+  void _subscribeToTopics() {
+    if (client?.connectionStatus?.state != MqttConnectionState.connected) {
+      print('Cannot subscribe - client not connected');
+      return;
+    }
+
+    print('Subscribing to topics: ${subscriptionTopics.join(', ')}');
+    
+    try {
+      for (final topic in subscriptionTopics) {
+        client!.subscribe(topic, MqttQos.atLeastOnce);
+      }
+      
+      _setupMessageHandling();
+    } catch (e) {
+      print('Error subscribing to topics: $e');
+      if (mounted) {
+        setState(() {
+          _commandStatus = 'Subscription error: ${e.toString()}';
+        });
+      }
+    }
+  }
+
+  void _setupMessageHandling() {
+    if (client == null || client!.updates == null) {
+      print('MQTT client or updates stream is null');
+      return;
+    }
+
+    _mqttSubscription = client!.updates!.listen((List<MqttReceivedMessage<MqttMessage>> messages) {
+      for (var message in messages) {
+        final payload = message.payload;
+        if (payload is! MqttPublishMessage) {
+          print('Received non-publish message');
+          continue;
+        }
+
+        final topic = message.topic;
+        final payloadStr = MqttPublishPayload.bytesToStringAsString(payload.payload.message);
+
+        print('Received message on $topic: $payloadStr');
+
+        if (mounted) {
+          setState(() {
+            _lastMqttMessage = 'Topic: $topic\nPayload: $payloadStr';
+            
+            try {
+              final jsonData = jsonDecode(payloadStr);
+              if (jsonData is Map) {
+                if (jsonData.containsKey('min_humidity')) {
+                  _minHumController.text = jsonData['min_humidity'].toString();
+                }
+                if (jsonData.containsKey('max_humidity')) {
+                  _maxHumController.text = jsonData['max_humidity'].toString();
+                }
+                if (jsonData.containsKey('min_temperature')) {
+                  _minTempController.text = jsonData['min_temperature'].toString();
+                }
+                if (jsonData.containsKey('max_temperature')) {
+                  _maxTempController.text = jsonData['max_temperature'].toString();
+                }
+              }
+            } catch (e) {
+              print('Error parsing MQTT message: $e');
+            }
+          });
+        }
+      }
+    }, onError: (error) {
+      print('MQTT message stream error: $error');
+      if (mounted) {
+        setState(() {
+          _commandStatus = 'MQTT stream error: ${error.toString()}';
+        });
+      }
+    });
+  }
+
+  void _disconnectMqtt() {
+    print('Attempting to disconnect MQTT client');
+    try {
+      _mqttSubscription?.cancel();
+      if (client?.connectionStatus?.state == MqttConnectionState.connected) {
+        for (final topic in subscriptionTopics) {
+          client!.unsubscribe(topic);
+          print('Unsubscribed from topic: $topic');
+        }
+      }
+      client?.disconnect();
+    } catch (e) {
+      print('Error during MQTT disconnect: $e');
+      if (mounted) {
+        setState(() {
+          mqttConnectionState = MqttConnectionState.disconnected;
+          _commandStatus = 'Disconnected, but encountered an error: ${e.toString()}';
+        });
+      }
+    }
+  }
+
+  void _onConnected() {
+    print('MQTT Client::Connected callback');
+    if (mounted) {
+      setState(() {
+        mqttConnectionState = MqttConnectionState.connected;
+        _commandStatus = 'Connected to MQTT broker. Ready to send commands.';
+      });
+    }
+  }
+
+  void _onDisconnected() {
+    print('MQTT Client::Disconnected callback');
+    if (mounted) {
+      setState(() {
+        mqttConnectionState = MqttConnectionState.disconnected;
+        if (_commandStatus.contains('Connected') || _commandStatus.contains('Disconnecting')) {
+          _commandStatus = 'Disconnected from MQTT broker.';
+        }
+        _lastMqttMessage = 'MQTT Disconnected.';
+      });
+    }
+  }
+
+  void _onSubscribed(String topic) {
+    print('MQTT Client::Subscribed callback - topic: $topic');
+    if (mounted) {
+      setState(() {
+        _commandStatus = 'Subscribed to $topic';
+      });
+    }
+  }
+
+  void _onPong() {
+    print('MQTT Client::Ping response callback received');
+  }
+
+  void _sendCommand() {
+    FocusScope.of(context).unfocus();
+
+    if (client?.connectionStatus?.state != MqttConnectionState.connected) {
+      if (mounted) {
+        setState(() {
+          _commandStatus = 'Not connected to MQTT broker. Trying to reconnect...';
+        });
+      }
+      _connectMqtt();
+      return;
+    }
+
+    final payload = <String, dynamic>{};
+    bool hasValidData = false;
+
+    if (_minTempController.text.isNotEmpty) {
+      final minTemp = double.tryParse(_minTempController.text);
+      if (minTemp != null) {
+        payload['min_temperature'] = minTemp;
+        hasValidData = true;
+      }
+    }
+
+    if (_maxTempController.text.isNotEmpty) {
+      final maxTemp = double.tryParse(_maxTempController.text);
+      if (maxTemp != null) {
+        payload['max_temperature'] = maxTemp;
+        hasValidData = true;
+      }
+    }
+
+    if (_minHumController.text.isNotEmpty) {
+      final minHum = double.tryParse(_minHumController.text);
+      if (minHum != null) {
+        payload['min_humidity'] = minHum;
+        hasValidData = true;
+      }
+    }
+
+    if (_maxHumController.text.isNotEmpty) {
+      final maxHum = double.tryParse(_maxHumController.text);
+      if (maxHum != null) {
+        payload['max_humidity'] = maxHum;
+        hasValidData = true;
+      }
+    }
+
+    if (!hasValidData) {
+      if (mounted) {
+        setState(() {
+          _commandStatus = 'No valid control values entered';
+        });
+      }
+      return;
+    }
+
+    final payloadStr = jsonEncode(payload);
+    final builder = MqttClientPayloadBuilder();
+    builder.addString(payloadStr);
+
+    try {
+      print('Publishing to $setpointMqttTopic: $payloadStr');
+      client!.publishMessage(
+        setpointMqttTopic,
+        MqttQos.atLeastOnce,
+        builder.payload!,
+      );
+
+      if (mounted) {
+        setState(() {
+          _commandStatus = 'Command sent successfully';
+        });
+      }
+    } catch (e) {
+      print('Error publishing MQTT message: $e');
+      if (mounted) {
+        setState(() {
+          _commandStatus = 'Failed to send command: ${e.toString()}';
+        });
+      }
+    }
+  }
+
+  String _mqttConnectionStateString(MqttConnectionState state) {
+    switch (state) {
+      case MqttConnectionState.connecting:
+        return 'Connecting...';
+      case MqttConnectionState.connected:
+        return 'Connected';
+      case MqttConnectionState.disconnected:
+        return 'Disconnected';
+      case MqttConnectionState.disconnecting:
+        return 'Disconnecting...';
+      case MqttConnectionState.faulted:
+        return 'Connection Error';
+      default:
+        return 'Unknown State';
+    }
+  }
+
+  Color _getConnectionStatusColor(MqttConnectionState state) {
+    switch (state) {
+      case MqttConnectionState.connected:
+        return Colors.green;
+      case MqttConnectionState.connecting:
+        return Colors.orange;
+      case MqttConnectionState.disconnected:
+        return Colors.red;
+      case MqttConnectionState.disconnecting:
+        return Colors.orange;
+      case MqttConnectionState.faulted:
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+
   Future<void> _fetchInitialData() async {
-    if (!mounted) return; // Prevent setState calls after widget is disposed
+    if (!mounted) return;
+
     setState(() {
-      _isLoading = true; // Set loading state
-      _errorMessage = null; // Clear previous errors
-      _allLatestData.clear(); // Clear previous data before fetching
+      _isLoading = true;
+      _errorMessage = null;
+      _allLatestData.clear();
     });
 
-    // Create a list of futures, one for fetching data for each location.
     List<Future<void>> fetchFutures = [];
     for (final location in _locations) {
       fetchFutures.add(_fetchLatestSensorData(location));
     }
 
     try {
-      // Wait for all fetch operations to complete.
       await Future.wait(fetchFutures);
     } catch (e) {
-      // Catch potential errors that occur during the concurrent fetching process.
       if (mounted) {
         setState(() {
           _errorMessage = "Error fetching initial data: ${e.toString()}";
@@ -120,371 +463,222 @@ class _FisheryState extends State<Fishery> with AutomaticKeepAliveClientMixin {
       }
     }
 
-    if (mounted) { // Check mounted state again before calling setState
+    if (mounted) {
       setState(() {
-        // After all fetches are done, update the displayed data (_latestData)
-        // to show the data fetched for the currently _selectedLocation.
-        _latestData = _allLatestData.containsKey(_selectedLocation) ? _allLatestData[_selectedLocation] : null;
-
-        _isLoading = false; // Stop the main loading indicator.
-
-        // Update the error message based on the overall fetch results and the selected location's data.
+        _isLoading = false;
         _updateErrorMessage();
       });
     }
   }
 
-
-  // Fetches the latest sensor data for a single farm ID using the dedicated backend endpoint.
-  // Stores the result in the _allLatestData map.
   Future<void> _fetchLatestSensorData(String farmId) async {
-    if (!mounted) return; // Ensure widget is still mounted
+    if (!mounted) return;
 
     try {
-      // Construct the URL to call the new backend endpoint for latest data.
-      final url = Uri.parse(
-          'http://10.0.2.2:3000/latest_sensor_data?farm_id=$farmId');
-
+      final url = Uri.parse('http://10.0.2.2:3000/latest_sensor_data?farm_id=$farmId');
       print('Fetching latest data for farm $farmId from URL: $url');
 
-      // Send the HTTP GET request with a timeout.
       final response = await http.get(url).timeout(const Duration(seconds: 20));
-
-      if (!mounted) return; // Check mounted again after async operation
+      if (!mounted) return;
 
       if (response.statusCode == 200) {
         dynamic decodedBody = json.decode(response.body);
         List<dynamic> dataList = [];
 
-        // Expecting a JSON structure like {"success": true, "data": [...] }.
-        if (decodedBody is Map<String, dynamic> && decodedBody.containsKey('data') && decodedBody['data'] is List) {
+        if (decodedBody is Map<String, dynamic> &&
+            decodedBody.containsKey('data') &&
+            decodedBody['data'] is List) {
           dataList = decodedBody['data'] as List;
         } else {
-          // Log if the response format is unexpected.
           print("Unexpected response format for latest data for location $farmId: $decodedBody");
-          // Store an empty map for this farm's latest data to indicate fetch failed or data was malformed.
           if (mounted) _allLatestData[farmId] = {};
-          return; // Exit the function for this farm's fetch.
+          return;
         }
 
         Map<String, Map<String, dynamic>> latestRecords = {};
-        // Process the list of data items received from the backend.
-        // The backend endpoint should return the latest record per sensor.
         for (var item in dataList) {
-          // Basic validation for each item in the data list.
-          if (item is! Map<String, dynamic> || item['sensor_id'] == null || item['timestamp'] == null || item['value'] == null) {
+          if (item is! Map<String, dynamic> ||
+              item['sensor_id'] == null ||
+              item['timestamp'] == null ||
+              item['value'] == null) {
             print("Skipping invalid data item for farm $farmId: $item");
-            continue; // Skip this invalid item.
+            continue;
           }
           String sensorId = item['sensor_id'] as String;
-
-          // Store the entire data item using sensorId as the key in the latestRecords map for this farm.
           latestRecords[sensorId] = item;
         }
 
-        if (mounted) { // Check mounted before setState in case processing took time
-          // Store the fetched latest records for this farmId in the main _allLatestData map.
-          _allLatestData[farmId] = latestRecords;
-          // Updated log message to reflect fetching latest data
-          print('Successfully fetched and processed latest data for farm $farmId. Found ${latestRecords.length} latest sensor readings.');
+        if (mounted) {
+          final Map<String, Map<String, dynamic>> filteredLatestRecords = {};
+          for (var sensorId in _sensorIdsToDisplay) {
+            if (latestRecords.containsKey(sensorId)) {
+              filteredLatestRecords[sensorId] = latestRecords[sensorId]!;
+            }
+          }
+          _allLatestData[farmId] = filteredLatestRecords;
+          print('Successfully fetched and processed latest data for farm $farmId. Displaying ${filteredLatestRecords.length} of ${_sensorIdsToDisplay.length} sensors.');
         }
-
       } else {
-        // Log the failure with status code and reason message.
         print("Failed to load latest data for location $farmId: ${response.statusCode} ${response.reasonPhrase ?? 'Unknown Error'}");
-        // Store an empty map for this farm's latest data on HTTP error.
         if (mounted) {
           _allLatestData[farmId] = {};
         }
       }
-
     } catch (e) {
-      // Log any errors that occur during the HTTP request or initial processing.
       print("Error fetching latest data for location $farmId: $e");
-      // Store an empty map for this farm's latest data on fetch error.
       if (mounted) {
         _allLatestData[farmId] = {};
       }
     }
   }
 
-
-  // Helper function to format timestamp strings consistently.
   String _formatTimestamp(String? ts) {
     if (ts == null || ts.isEmpty) return "-";
     try {
-      // Attempt to parse the timestamp string (assuming ISO 8601 or similar).
-      // Convert to UTC first, then to the local time zone for display.
       final dtUtc = DateTime.parse(ts).toUtc();
       final dtLocal = dtUtc.toLocal();
-      // Format using the desired pattern: Day-Month-Year Hour:Minute:Second
       return DateFormat('dd-MM-yyyy HH:mm:ss').format(dtLocal);
     } catch (_) {
-      // If parsing fails, print an error and return the original string or a dash.
       print('Failed to parse timestamp for formatting: $ts');
-      return ts ?? '-'; // Return original string or '-'
+      return ts ?? '-';
     }
   }
 
-
-  // Helper function to get a user-friendly name for a location/farm ID
   String _getFarmName(String farmId) {
-    // Define a map of farm IDs to user-friendly names.
     final farmNames = {
       '60': 'Farm 60',
       '61': 'Farm 61',
-      // Add other farm IDs here as needed.
     };
-    // Return the friendly name if found, otherwise return a default name with the ID.
     return farmNames[farmId] ?? 'Farm $farmId';
   }
 
-
-  // Helper function to update the error message based on the current state of fetched data.
   void _updateErrorMessage() {
+    if (_isLoading) {
+      _errorMessage = null;
+      return;
+    }
+
     if (_locations.isEmpty) {
       _errorMessage = "No locations defined for this view.";
-    } else if (_allLatestData.isEmpty && !_isLoading) { // Check _isLoading to avoid showing this message during initial load
-      _errorMessage = _errorMessage ?? "Could not retrieve data for any location. Check backend and network."; // Use existing error or a general one
-    } else if (!_allLatestData.containsKey(_selectedLocation) && !_isLoading) {
-      // This scenario might happen if fetching for the selected location failed individually.
-      _errorMessage = "Data for Farm $_selectedLocation not loaded. Please check backend or try refreshing.";
-    } else if ((_allLatestData[_selectedLocation] == null || _allLatestData[_selectedLocation]!.isEmpty) && !_isLoading) {
-      // This means fetching for the selected location succeeded, but returned no data.
-      _errorMessage = "No sensor data available for Farm $_selectedLocation.";
-    } else {
-      _errorMessage = null; // Clear error message if data is successfully loaded for the selected location.
+      return;
+    }
+
+    if (_allLatestData.isEmpty) {
+      _errorMessage = _errorMessage ?? "Could not retrieve data for any location. Check backend and network.";
+      return;
+    }
+
+    if (!_allLatestData.containsKey(_selectedLocation) || _allLatestData[_selectedLocation] == null) {
+      _errorMessage = "Data for Farm ${_getFarmName(_selectedLocation)} not loaded. Please check backend or try refreshing.";
+      return;
+    }
+
+    if (_allLatestData[_selectedLocation]!.isEmpty) {
+      if (_sensorIdsToDisplay.isNotEmpty) {
+        _errorMessage = "No sensor data available for Farm ${_getFarmName(_selectedLocation)}.";
+      } else {
+        _errorMessage = "No known sensors configured for Farm ${_getFarmName(_selectedLocation)} in the app.";
+      }
+      return;
+    }
+
+    _errorMessage = null;
+  }
+
+  String _getSensorTitle(String sensorId) {
+    final sensorTitles = {
+      'DO001': 'Dissolved Oxygen',
+      'HUM01': 'Air Humidity',
+      'TEM01': 'Water Temperature',
+      'TEM02': 'Air Temperature',
+      'RSS01': 'pH',
+      'TDS01': 'TDS',
+    };
+    return sensorTitles[sensorId] ?? sensorId;
+  }
+
+  String _getSensorUnit(String sensorId) {
+    switch (sensorId) {
+      case 'DO001':
+        return 'mg/L';
+      case 'HUM01':
+        return '%';
+      case 'TEM01':
+      case 'TEM02':
+        return '°C';
+      case 'RSS01':
+        return '';
+      case 'TDS01':
+        return 'ppm';
+      default:
+        return '';
     }
   }
 
-
-  @override
-  Widget build(BuildContext context) {
-    // Get the latest data for the currently selected location.
-    // Use a default empty map if the selected location's data is not yet fetched or is null/empty.
-    final selectedLocationData = _allLatestData[_selectedLocation] ?? {};
-
-    // Combine the list of sensor IDs to display and placeholders for empty cards.
-    // Create a list of widgets to pass to GridView.count.
-    final List<Widget> sensorCards = _sensorIdsToDisplay.map((sensorId) {
-      // Get the data for the current sensor ID from the fetched data.
-      final sensorData = selectedLocationData[sensorId];
-      // Build the sensor card, passing the specific data found (or null if not found).
-      return _buildSensorCard(
-        _getSensorTitle(sensorId), // Get user-friendly title for the sensor ID
-        sensorData?['value']?.toString() ?? '-', // Get value or '-'
-        _formatTimestamp(sensorData?['timestamp']), // Get formatted timestamp or '-'
-        sensorId, // Pass the sensor ID
-        // Define the onTap action: navigate to the graph page if data is available for this sensor
-        sensorData != null ? () => Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => FisheryGraph(
-              farmId: _selectedLocation, // Pass the currently selected farm ID
-              sensorId: sensorId, // Pass the specific sensor ID for the graph
-            ),
-          ),
-        ) : () {
-          // Optional: Show a message or do nothing if data is not available for this sensor
-          print('No data available to show graph for $sensorId on Farm $_selectedLocation');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('No historical data available for ${_getSensorTitle(sensorId)}.')),
-          );
-        },
-      );
-    }).toList(); // Convert the mapped iterable to a list of widgets.
-
-    // Add the specified number of empty cards to the list.
-    for (int i = 0; i < _numberOfEmptyCards; i++) {
-      sensorCards.add(_buildEmptyCard()); // Add an empty card widget
-    }
-
-
-    return Scaffold(
-      appBar: AppBar(
-        // Updated title to be static as the farm name is now in the body
-        title: const Text('Fishery'),
-        centerTitle: true, // Center the title
-        // Removed the actions list containing the dropdown
-        // actions: [ ... ]
-      ),
-      // Wrap the body content in a RefreshIndicator and SingleChildScrollView.
-      body: RefreshIndicator( // Allows users to pull down to refresh the data.
-        onRefresh: _fetchInitialData, // The function called when the user pulls down.
-        child: SingleChildScrollView( // Makes the content scrollable if it overflows.
-          physics: const AlwaysScrollableScrollPhysics(), // Ensures scrolling is possible even if content fits the screen.
-          child: Padding(
-            padding: const EdgeInsets.all(8.0), // Padding around the main column content.
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch, // Stretch children horizontally.
-              children: [
-                // --- Location dropdown added here ---
-                // Only show the dropdown if there are locations defined and more than one option.
-                if (!_isLoading && _locations.isNotEmpty && _locations.length > 1)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0), // Add some padding
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start, // Align label to the start
-                      children: [
-                        Text(
-                          'Select Location:',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white70), // Style for the label
-                        ),
-                        const SizedBox(height: 4), // Small space between label and dropdown
-                        DropdownButtonFormField<String>(
-                          // Use DropdownButtonFormField for better styling and integration in forms
-                          decoration: InputDecoration(
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8), // Rounded corners for the dropdown
-                              borderSide: BorderSide.none, // No border line
-                            ),
-                            filled: true,
-                            fillColor: const Color.fromARGB(255, 114, 114, 114), // Background color of the dropdown field
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10), // Padding inside the field
-                          ),
-                          // Set the value to the selected location, or the first location if the selected one is invalid/null.
-                          value: _locations.contains(_selectedLocation) ? _selectedLocation : (_locations.isNotEmpty ? _locations.first : null),
-                          icon: const Icon(Icons.arrow_downward, color: Colors.white),
-                          elevation: 16,
-                          style: const TextStyle(color: Colors.white, fontSize: 16), // Slightly smaller text in dropdown
-                          // Removed dropdownColor: Colors.transparent to make it visible
-                          onChanged: (String? newValue) {
-                            if (newValue != null && newValue != _selectedLocation) {
-                              setState(() {
-                                _selectedLocation = newValue;
-                                // Update the displayed data to the newly selected location's data.
-                                _latestData = _allLatestData[_selectedLocation];
-                                _updateErrorMessage(); // Update error message based on new selection.
-                              });
-                            }
-                          },
-                          items: _locations.map<DropdownMenuItem<String>>((String value) {
-                            return DropdownMenuItem<String>(
-                              value: value,
-                              child: Text(_getFarmName(value)), // Display friendly farm name
-                            );
-                          }).toList(),
-                        ),
-                      ],
-                    ),
-                  ),
-                // --- End Location dropdown ---
-
-                // Show a loading indicator if _isLoading is true.
-                if (_isLoading)
-                  const Center(child: Padding(
-                    padding: EdgeInsets.all(20.0), // Add padding around indicator
-                    child: CircularProgressIndicator(),
-                  )),
-
-                // Show the error message if _errorMessage is set and not currently loading.
-                if (_errorMessage != null && !_isLoading)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0),
-                    child: Text(
-                      _errorMessage!, // Display the error message.
-                      style: const TextStyle(color: Colors.red, fontSize: 16),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-
-                // Show the GridView of sensor cards if not loading and no error, and data is available for the selected location.
-                // Or show the grid with empty cards if locations are defined but no data is loaded yet or available.
-                if (!_isLoading && _errorMessage == null && (_locations.isNotEmpty))
-                  GridView.count(
-                    shrinkWrap: true, // Makes the GridView take minimum space needed.
-                    physics: const NeverScrollableScrollPhysics(), // Prevents the GridView from having its own scroll behavior inside SingleChildScrollView.
-                    crossAxisCount: 2, // Displays cards in a 2-column grid.
-                    crossAxisSpacing: 8.0, // Horizontal spacing between cards.
-                    mainAxisSpacing: 8.0, // Vertical spacing between cards.
-                    childAspectRatio: 0.9, // Controls the width to height ratio of the cards.
-                    // Use the combined list of sensorCards (real data cards + empty placeholders)
-                    children: sensorCards,
-                  )
-                // Removed the redundant check for empty selectedLocationData here,
-                // as the empty cards are now always added if locations exist and not loading/error.
-                // The message for no data for the selected location is handled by _updateErrorMessage.
-
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-
-  // _buildSensorCard widget to display sensor information in a card format.
-  // It is also tappable to navigate to the graph page for that sensor.
-  Widget _buildSensorCard(
-      String title, // Title of the sensor (e.g., "Dissolved Oxygen")
-      String value, // The latest sensor reading value (formatted as a string)
-      String? timestamp, // The timestamp of the latest reading (formatted string or null)
-      String sensorId, // The unique ID of the sensor (e.g., "DO001")
-      VoidCallback? onTap // The function to call when the card is tapped (for navigation), can be null
-      ) {
-    // Use InkWell for tap detection and ripple effect. onTap is now nullable.
+  Widget _buildSensorCard(String title, String value, String? timestamp,
+      String sensorId, VoidCallback? onTap) {
     return InkWell(
-      onTap: onTap, // Assign the provided onTap function (can be null).
-      // Use a slightly different color or style if the card is not tappable (onTap is null)
-      // This is a simple visual cue that there's no data to show a graph for.
+      onTap: onTap,
       child: Card(
-        elevation: 3, // Card shadow.
-        margin: const EdgeInsets.all(6), // Margin around the card.
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), // Rounded corners for the card.
-        // Set background color based on whether the card is tappable (has data)
-        color: onTap != null ? Theme.of(context).cardColor : Colors.grey[800], // Darker grey for non-tappable
+        elevation: 3,
+        margin: const EdgeInsets.all(6),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        color: onTap != null ? Theme.of(context).cardColor : Colors.grey[800],
         child: Padding(
-          padding: const EdgeInsets.all(12), // Padding inside the card.
+          padding: const EdgeInsets.all(12),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center, // Center content vertically.
-            crossAxisAlignment: CrossAxisAlignment.center, // Center content horizontally.
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Text(
-                title, // Display the sensor title.
+                title,
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: onTap != null ? null : Colors.white54, // Dim text if not tappable
-                ),
+                      fontWeight: FontWeight.bold,
+                      color: onTap != null ? null : Colors.white54,
+                    ),
                 textAlign: TextAlign.center,
-                maxLines: 2, // Allow title to span up to 2 lines.
-                overflow: TextOverflow.ellipsis, // Add ellipsis if title overflows.
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 8), // Spacing.
+              const SizedBox(height: 8),
               Text(
-                value, // Display the sensor value.
+                value,
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: onTap != null ? null : Colors.white54, // Dim text if not tappable
-                ),
+                      fontWeight: FontWeight.w600,
+                      color: onTap != null ? null : Colors.white54,
+                    ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8), // Spacing.
-              // --- This displays the timestamp ---
+              const SizedBox(height: 8),
               Text(
-                timestamp ?? '-', // Display timestamp or '-' if null.
+                timestamp ?? '-',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: onTap != null ? Colors.grey[600] : Colors.white38, // Dim text if not tappable
-                ),
+                      color: onTap != null ? Colors.grey[600] : Colors.white38,
+                    ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 4), // Spacing.
-              // --- Display Sensor ID below the timestamp (Optional, but can help identify) ---
+              const SizedBox(height: 4),
               Text(
-                'ID: $sensorId', // Display the sensor ID.
+                'ID: $sensorId',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: onTap != null ? Colors.grey[500] : Colors.white30, // Dim text if not tappable
-                  fontSize: 10,
-                ),
+                      color: onTap != null ? Colors.grey[500] : Colors.white30,
+                      fontSize: 10,
+                    ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8), // Space before button-like text.
-              // --- More Info Text (looks like a button due to styling and InkWell parent) ---
-              // Only show "More Info" if the card is tappable (has data)
+              const SizedBox(height: 8),
               if (onTap != null)
                 Text(
                   'More Info',
-                  style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.blueAccent), // Style as a link/button.
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelLarge
+                      ?.copyWith(color: Colors.blueAccent),
+                ),
+              if (onTap == null)
+                const Text(
+                  'No Data',
+                  style: TextStyle(color: Colors.white38),
                 ),
             ],
           ),
@@ -493,55 +687,426 @@ class _FisheryState extends State<Fishery> with AutomaticKeepAliveClientMixin {
     );
   }
 
-  // _buildEmptyCard widget to display a placeholder card.
   Widget _buildEmptyCard() {
     return Card(
       elevation: 3,
       margin: const EdgeInsets.all(6),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: Colors.grey[850], // A darker grey for empty cards
+      color: Colors.grey[850],
       child: const Padding(
         padding: EdgeInsets.all(12),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Icon(Icons.info_outline, size: 30, color: Colors.white54), // Placeholder icon
+            Icon(Icons.info_outline, size: 30, color: Colors.white54),
             SizedBox(height: 8),
             Text(
               'No Data Available',
               style: TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 16,
-                color: Colors.white54, // Dim text
+                color: Colors.white54,
               ),
               textAlign: TextAlign.center,
             ),
             SizedBox(height: 4),
             Text(
               'Placeholder',
-              style: TextStyle(fontSize: 12, color: Colors.white38), // Smaller, dim text
+              style: TextStyle(fontSize: 12, color: Colors.white38),
               textAlign: TextAlign.center,
             ),
             SizedBox(height: 8),
-            // No "More Info" text for empty cards
           ],
         ),
       ),
     );
   }
 
-  // Helper function to get a user-friendly title for a sensor ID
-  String _getSensorTitle(String sensorId) {
-    final sensorTitles = {
-      'DO001': 'Dissolved Oxygen',
-      'HUM01': 'Air Humidity',
-      'TEM01': 'Water Temperature',
-      'TEM02': 'Air Temperature',
-      'RSS01': 'pH',
-      'TDS001': 'TDS',
-      // Add other sensor ID to title mappings here
-    };
-    return sensorTitles[sensorId] ?? sensorId; // Return title if found, otherwise the ID itself
+  Widget _buildLocationDropdown() {
+    if (_locations.length <= 1) {
+      return Container();
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Select Farm:',
+            style: Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(color: Colors.white70),
+          ),
+          const SizedBox(height: 4),
+          DropdownButtonFormField<String>(
+            decoration: InputDecoration(
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: const Color.fromARGB(255, 114, 114, 114),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            value: _locations.contains(_selectedLocation)
+                ? _selectedLocation
+                : (_locations.isNotEmpty ? _locations.first : null),
+            icon: const Icon(Icons.arrow_downward, color: Colors.white),
+            elevation: 16,
+            style: const TextStyle(color: Colors.white, fontSize: 16),
+            dropdownColor: const Color.fromARGB(255, 114, 114, 114),
+            onChanged: (String? newValue) {
+              if (newValue != null && newValue != _selectedLocation) {
+                setState(() {
+                  _selectedLocation = newValue;
+                  _updateErrorMessage();
+                });
+              }
+            },
+            items: _locations.map<DropdownMenuItem<String>>((String value) {
+              return DropdownMenuItem<String>(
+                value: value,
+                child: Text(_getFarmName(value)),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlTab() {
+    return GestureDetector(
+      onTap: () {
+        FocusScope.of(context).unfocus();
+      },
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Card(
+              color: Colors.grey[850],
+              elevation: 3,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
+                  children: [
+                    Icon(
+                      color: _getConnectionStatusColor(mqttConnectionState),
+                      Icons.circle,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'MQTT Status: ${_mqttConnectionStateString(mqttConnectionState)}',
+                        style: TextStyle(
+                          color: _getConnectionStatusColor(mqttConnectionState),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    if (mqttConnectionState ==
+                            MqttConnectionState.disconnected ||
+                        mqttConnectionState == MqttConnectionState.faulted)
+                      IconButton(
+                        icon: const Icon(Icons.refresh),
+                        onPressed: _connectMqtt,
+                        tooltip: 'Reconnect',
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _lastMqttMessage,
+              style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            Card(
+              color: Colors.grey[850],
+              elevation: 3,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Temperature Control',
+                      style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Set Minimum Temperature (°C):',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(color: Colors.white60),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _minTempController,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                          hintText: 'Enter min temperature',
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          filled: true,
+                          fillColor: Colors.grey[800],
+                          hintStyle: const TextStyle(color: Colors.white38)),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Set Maximum Temperature (°C):',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(color: Colors.white60),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _maxTempController,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                          hintText: 'Enter max temperature',
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          filled: true,
+                          fillColor: Colors.grey[800],
+                          hintStyle: const TextStyle(color: Colors.white38)),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Card(
+              color: Colors.grey[850],
+              elevation: 3,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Humidity Control',
+                      style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Set Minimum Humidity (%):',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(color: Colors.white60),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _minHumController,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                          hintText: 'Enter min humidity',
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          filled: true,
+                          fillColor: Colors.grey[800],
+                          hintStyle: const TextStyle(color: Colors.white38)),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Set Maximum Humidity (%):',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(color: Colors.white60),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _maxHumController,
+                      keyboardType:
+                          const TextInputType.numberWithOptions(decimal: true),
+                      decoration: InputDecoration(
+                          hintText: 'Enter max humidity',
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          filled: true,
+                          fillColor: Colors.grey[800],
+                          hintStyle: const TextStyle(color: Colors.white38)),
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: mqttConnectionState == MqttConnectionState.connected
+                  ? _sendCommand
+                  : null,
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                textStyle: const TextStyle(fontSize: 18),
+                backgroundColor: Colors.blueAccent,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: Colors.grey[700],
+                disabledForegroundColor: Colors.grey[400],
+              ),
+              child: const Text('Submit All Controls'),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _commandStatus,
+              style: TextStyle(
+                color: _commandStatus.contains('Error') ||
+                        _commandStatus.contains('Invalid') ||
+                        _commandStatus.contains('failed') ||
+                        _commandStatus.contains('Not connected') ||
+                        _commandStatus.contains('timed out')
+                    ? Colors.redAccent
+                    : (_commandStatus.contains('Connected') || _commandStatus.contains('sent successfully') ? Colors.greenAccent : Colors.white70),
+                fontSize: 14,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSensorsTab(List<Widget> sensorCards) {
+    return RefreshIndicator(
+      onRefresh: _fetchInitialData,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildLocationDropdown(),
+                if (_isLoading)
+                  const Padding(
+                    padding: EdgeInsets.all(20.0),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else if (_errorMessage != null)
+                  Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Text(
+                      _errorMessage!,
+                      style: const TextStyle(color: Colors.red),
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                else if (_locations.isNotEmpty)
+                  GridView.count(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    crossAxisCount: 2,
+                    crossAxisSpacing: 8.0,
+                    mainAxisSpacing: 8.0,
+                    childAspectRatio: 0.9,
+                    children: sensorCards,
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    final selectedLocationData = _allLatestData[_selectedLocation] ?? {};
+
+    final List<Widget> sensorCards = _sensorIdsToDisplay.map((sensorId) {
+      final sensorData = selectedLocationData[sensorId];
+      final bool isTappable = sensorData != null;
+
+      return _buildSensorCard(
+        _getSensorTitle(sensorId),
+        sensorData?['value']?.toString() ?? '-',
+        _formatTimestamp(sensorData?['timestamp']),
+        sensorId,
+        isTappable
+            ? () {
+                FocusScope.of(context).unfocus();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => FisheryGraph(
+                      farmId: _selectedLocation,
+                      sensorId: sensorId,
+                    ),
+                  ),
+                );
+              }
+            : null,
+      );
+    }).toList();
+
+    final int cardsToAdd = _numberOfEmptyCards;
+    if (sensorCards.length < _sensorIdsToDisplay.length + cardsToAdd) {
+      final int remainingSlots = (_sensorIdsToDisplay.length + cardsToAdd) - sensorCards.length;
+      for (int i = 0; i < remainingSlots; i++) {
+        if (sensorCards.length < _sensorIdsToDisplay.length + _numberOfEmptyCards) {
+          sensorCards.add(_buildEmptyCard());
+        } else {
+          break;
+        }
+      }
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Fishery - ${_getFarmName(_selectedLocation)}'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(icon: Icon(Icons.thermostat), text: 'Sensors'),
+            Tab(icon: Icon(Icons.tune), text: 'Control'),
+          ],
+          indicatorColor: Colors.white,
+        ),
+        centerTitle: true,
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          _buildSensorsTab(sensorCards),
+          _buildControlTab(),
+        ],
+      ),
+    );
   }
 }

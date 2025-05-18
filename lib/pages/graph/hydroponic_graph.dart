@@ -25,24 +25,24 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
   TimeOfDay? _endTime;
   bool _showGraph = false;
 
-  List<String> _availableSensorsForFarm = [];
-  List<String> _availableSensorsFiltered = [];
   Map<String, String> _sensorNameMap = {};
   String? _selectedSensorId;
+
+  final Color _backgroundColor = Colors.grey[900]!;
+  final Color _textColor = Colors.white;
+  final Color _secondaryTextColor = Colors.white70;
+  final Color _minColor = Colors.redAccent;
+  final Color _maxColor = Colors.greenAccent;
 
   final Map<String, Color> _sensorColors = {
     'PHO01': Colors.greenAccent,
     'TEM01': Colors.orange,
-    'HUM01': Colors.blueGrey,
+    'HUM01': Colors.blue,
     'EC001': Colors.yellow,
     'DO001': Colors.cyan,
     'LUX01': Colors.purpleAccent,
-    'TEM02': Colors.blue,
+    'TEM02': Colors.lightBlue,
   };
-
-  final List<String> _hydroponicSensorIds = [
-    'PHO01', 'TEM01', 'HUM01', 'EC001', 'DO001', 'LUX01', 'TEM02'
-  ];
 
   @override
   void initState() {
@@ -54,39 +54,168 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     _startTime = TimeOfDay.fromDateTime(_startDate!);
 
     _selectedSensorId = widget.sensorId;
-    _fetchAvailableSensors();
+    _initializeGraphData();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Hydroponic Graph - Farm ${widget.farmId}'),
+  Future<void> _initializeGraphData() async {
+    if (!mounted) return;
+
+    setState(() {
+      isLoading = true;
+      errorMessage = '';
+      _showGraph = false;
+      sensorData = [];
+    });
+
+    if (_selectedSensorId == null) {
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+          errorMessage = 'No sensor ID provided to display graph.';
+          _showGraph = false;
+        });
+      }
+      return;
+    }
+
+    await _fetchSensorNames();
+    if (mounted) await _fetchSensorData();
+  }
+
+  Future<void> _fetchSensorNames() async {
+    if (!mounted) return;
+
+    try {
+      final url = Uri.parse('http://192.168.1.2:3000/sensors?farm_id=${widget.farmId}');
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final jsonData = json.decode(response.body);
+        final dataList = jsonData['data'];
+
+        if (dataList != null && dataList is List) {
+          Map<String, String> fetchedSensorNameMap = {};
+          for (var item in dataList) {
+            if (item is Map && item.containsKey('sensor_id')) {
+              String sensorId = item['sensor_id'].toString();
+              String sensorName = item.containsKey('name') && item['name'] != null
+                  ? item['name'].toString()
+                  : sensorId;
+              fetchedSensorNameMap[sensorId] = sensorName;
+            }
+          }
+
+          if (mounted) {
+            setState(() {
+              _sensorNameMap = fetchedSensorNameMap;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      print('Error fetching sensor names: $e');
+    }
+  }
+
+  double _calculateMin() {
+    if (sensorData.isEmpty) return 0.0;
+    return sensorData.map((e) => e.y).reduce((a, b) => a < b ? a : b);
+  }
+
+  double _calculateMax() {
+    if (sensorData.isEmpty) return 0.0;
+    return sensorData.map((e) => e.y).reduce((a, b) => a > b ? a : b);
+  }
+
+  double _calculateAverage() {
+    if (sensorData.isEmpty) return 0.0;
+    return sensorData.map((e) => e.y).reduce((a, b) => a + b) / sensorData.length;
+  }
+
+  Widget _buildStatsCards() {
+    if (!_showGraph || sensorData.isEmpty) return const SizedBox.shrink();
+
+    final minValue = _calculateMin();
+    final maxValue = _calculateMax();
+    final avgValue = _calculateAverage();
+    final sensorName = _sensorNameMap[_selectedSensorId] ?? _selectedSensorId!;
+    final sensorDescription = _getSensorDescription(_selectedSensorId!);
+    final lineColor = _sensorColors[_selectedSensorId] ?? Colors.cyan;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16.0),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(child: _buildStatCard('Min', minValue.toStringAsFixed(2), _minColor)),
+              const SizedBox(width: 8),
+              Expanded(child: _buildStatCard('Max', maxValue.toStringAsFixed(2), _maxColor)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(child: _buildStatCard('Avg', avgValue.toStringAsFixed(2), lineColor)),
+              const SizedBox(width: 8),
+              Expanded(child: _buildAboutCard(sensorName, sensorDescription)),
+            ],
+          ),
+        ],
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+    );
+  }
+
+  Widget _buildStatCard(String title, String value, Color color) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: Colors.grey[800],
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (_availableSensorsFiltered.isNotEmpty) _buildSensorDropdown(),
-            const SizedBox(height: 16),
-            _buildDateTimePickers(),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: isLoading ? null : _onShowGraphPressed,
-              child: isLoading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                    )
-                  : const Text('Show Graph'),
+            Row(
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: color,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: _secondaryTextColor,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _showGraph && sensorData.isNotEmpty
-                  ? _buildGraph()
-                  : _buildNoDataOrInitialScreen(),
+            const SizedBox(height: 8),
+            Text(
+              value,
+              style: TextStyle(
+                color: _textColor,
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ],
         ),
@@ -94,25 +223,83 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     );
   }
 
-  Widget _buildSensorDropdown() {
-    return DropdownButtonFormField<String>(
-      value: _selectedSensorId,
-      decoration: const InputDecoration(
-        labelText: 'Select Sensor',
-        border: OutlineInputBorder(),
+  Widget _buildAboutCard(String sensorName, String description) {
+    final lineColor = _sensorColors[_selectedSensorId] ?? Colors.cyan;
+    
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: Colors.grey[800],
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: lineColor.withOpacity(0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Center(
+                    child: Icon(
+                      Icons.info_outline,
+                      size: 14,
+                      color: lineColor,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Sensor Info',
+                  style: TextStyle(
+                    color: _secondaryTextColor,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              sensorName,
+              style: TextStyle(
+                color: _textColor,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              description,
+              style: TextStyle(
+                color: _secondaryTextColor,
+                fontSize: 12,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
       ),
-      items: _availableSensorsFiltered
-          .map((id) => DropdownMenuItem(
-                value: id,
-                child: Text(_sensorNameMap[id] ?? id),
-               ))
-          .toList(),
-      onChanged: (val) {
-        setState(() {
-          _selectedSensorId = val;
-        });
-      },
     );
+  }
+
+  String _getSensorDescription(String sensorId) {
+    switch (sensorId) {
+      case 'PHO01': return 'pH Level (0-14) - Measures acidity/alkalinity';
+      case 'TEM01': return 'Air Temperature (°C) - Ambient air temperature';
+      case 'HUM01': return 'Humidity (%) - Relative humidity in air';
+      case 'EC001': return 'EC (µS/cm) - Nutrient concentration';
+      case 'DO001': return 'Dissolved Oxygen (mg/L) - Water oxygen levels';
+      case 'LUX01': return 'Light Intensity (lux) - Light levels';
+      case 'TEM02': return 'Water Temperature (°C) - Water temperature';
+      default: return 'Hydroponic sensor measurement data';
+    }
   }
 
   Widget _buildDateTimePickers() {
@@ -141,7 +328,7 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+        Text(label, style: TextStyle(color: _textColor, fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         InkWell(
           onTap: onTap,
@@ -149,14 +336,15 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: Colors.grey[800],
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: Colors.white70),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _secondaryTextColor.withOpacity(0.5)),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(date != null ? DateFormat('yyyy-MM-dd').format(date) : 'Select Date', style: Theme.of(context).textTheme.bodyMedium),
-                const Icon(Icons.calendar_today, size: 18, color: Colors.white70),
+                Text(date != null ? DateFormat('yyyy-MM-dd').format(date.toLocal()) : 'Select Date', 
+                    style: TextStyle(color: _textColor)),
+                Icon(Icons.calendar_today, size: 18, color: _secondaryTextColor),
               ],
             ),
           ),
@@ -169,7 +357,7 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+        Text(label, style: TextStyle(color: _textColor, fontWeight: FontWeight.bold)),
         const SizedBox(height: 4),
         InkWell(
           onTap: onTap,
@@ -177,24 +365,21 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: Colors.grey[800],
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: Colors.white70),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _secondaryTextColor.withOpacity(0.5)),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(time != null ? time.format(context) : 'Select Time', style: Theme.of(context).textTheme.bodyMedium),
-                const Icon(Icons.access_time, size: 18, color: Colors.white70),
+                Text(time != null ? time.format(context) : 'Select Time', 
+                    style: TextStyle(color: _textColor)),
+                Icon(Icons.access_time, size: 18, color: _secondaryTextColor),
               ],
             ),
           ),
         ),
       ],
     );
-  }
-
-  void _onShowGraphPressed() {
-    _fetchSensorData();
   }
 
   Future<void> _selectDate(BuildContext context, bool isStartDate) async {
@@ -205,6 +390,20 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
       initialDate: initial,
       firstDate: DateTime(2000),
       lastDate: DateTime(now.year + 5),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: ColorScheme.dark(
+              primary: Colors.cyan,
+              onPrimary: _textColor,
+              surface: _backgroundColor,
+              onSurface: _textColor,
+            ),
+            dialogBackgroundColor: _backgroundColor,
+          ),
+          child: child!,
+        );
+      },
     );
     if (picked != null) {
       setState(() {
@@ -212,13 +411,11 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
           _startDate = picked;
           if (_endDate != null && _endDate!.isBefore(picked)) {
             _endDate = picked;
-            _endTime = _startTime;
           }
         } else {
           _endDate = picked;
           if (_startDate != null && picked.isBefore(_startDate!)) {
             _startDate = picked;
-            _startTime = _endTime;
           }
         }
       });
@@ -230,109 +427,44 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     final picked = await showTimePicker(
       context: context,
       initialTime: initial,
-      builder: (ctx, child) => MediaQuery(
-        data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
-        child: child!,
-      ),
+      builder: (ctx, child) {
+        return Theme(
+          data: Theme.of(ctx).copyWith(
+            colorScheme: ColorScheme.dark(
+              primary: Colors.cyan,
+              onPrimary: _textColor,
+              surface: _backgroundColor,
+              onSurface: _textColor,
+            ),
+            dialogBackgroundColor: _backgroundColor,
+          ),
+          child: MediaQuery(
+            data: MediaQuery.of(ctx).copyWith(alwaysUse24HourFormat: true),
+            child: child!,
+          ),
+        );
+      },
     );
     if (picked != null) {
       setState(() {
         if (isStart) {
           _startTime = picked;
-          if (_startDate != null && _endDate != null && _startTime != null && _endTime != null) {
-            final s = _startDate!.add(Duration(hours: _startTime!.hour, minutes: _startTime!.minute));
-            final e = _endDate!.add(Duration(hours: _endTime!.hour, minutes: _endTime!.minute));
-            if (s.isAfter(e)) _endTime = _startTime;
-          }
         } else {
           _endTime = picked;
-          if (_startDate != null && _endDate != null && _startTime != null && _endTime != null) {
-            final s = _startDate!.add(Duration(hours: _startTime!.hour, minutes: _startTime!.minute));
-            final e = _endDate!.add(Duration(hours: _endTime!.hour, minutes: _endTime!.minute));
-            if (e.isBefore(s)) _startTime = _endTime;
-          }
         }
       });
     }
   }
 
-  Future<void> _fetchAvailableSensors() async {
-    if (!mounted) return;
-
-    setState(() {
-      isLoading = true;
-      errorMessage = '';
-      _availableSensorsForFarm = [];
-      _availableSensorsFiltered = [];
-      _sensorNameMap = {};
-      _showGraph = false;
-      sensorData = [];
-    });
-
-    try {
-      final url = Uri.parse('http://10.0.2.2:3000/sensors?farm_id=${widget.farmId}');
-      final response = await http.get(url).timeout(const Duration(seconds: 10));
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final jsonData = json.decode(response.body);
-        final dataList = jsonData['data'];
-
-        if (dataList != null && dataList is List) {
-          _availableSensorsForFarm = dataList.map<String>((sensor) => sensor['sensor_id']?.toString() ?? '').where((id) => id.isNotEmpty).toList();
-
-          _sensorNameMap = Map.fromEntries(
-              dataList.where((sensor) => sensor['sensor_id'] != null && sensor.containsKey('name') && sensor['name'] != null)
-                  .map((sensor) => MapEntry(sensor['sensor_id'].toString(), sensor['name'].toString())),
-          );
-
-          _availableSensorsFiltered = _availableSensorsForFarm.where((id) => _hydroponicSensorIds.contains(id)).toList();
-
-          if (widget.sensorId != null && _availableSensorsFiltered.contains(widget.sensorId)) {
-            _selectedSensorId = widget.sensorId;
-          } else if (_availableSensorsFiltered.isNotEmpty) {
-            _selectedSensorId = _availableSensorsFiltered.first;
-          } else {
-            _selectedSensorId = null;
-          }
-
-          if (_selectedSensorId != null) {
-            await _fetchSensorData();
-          } else {
-            setState(() {
-              isLoading = false;
-              errorMessage = 'No hydroponic sensors available for this farm';
-              _showGraph = false;
-            });
-          }
-        } else {
-          setState(() {
-            isLoading = false;
-            errorMessage = 'No sensor data available';
-            _showGraph = false;
-          });
-        }
-      } else {
-        setState(() {
-          isLoading = false;
-          errorMessage = 'Could not load sensors. Please try again.';
-          _showGraph = false;
-        });
-      }
-    } catch (e) {
-      setState(() {
-        isLoading = false;
-        errorMessage = 'Network error. Please check your connection.';
-        _showGraph = false;
-      });
-    }
+  void _onShowGraphPressed() {
+    FocusScope.of(context).unfocus();
+    _fetchSensorData();
   }
 
   Future<void> _fetchSensorData() async {
     if (_selectedSensorId == null) {
       setState(() {
-        errorMessage = 'Please select a sensor';
+        errorMessage = 'Sensor ID is not set.';
         isLoading = false;
         _showGraph = false;
       });
@@ -348,8 +480,14 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
       return;
     }
 
-    final startDateTime = DateTime(_startDate!.year, _startDate!.month, _startDate!.day, _startTime!.hour, _startTime!.minute);
-    final endDateTime = DateTime(_endDate!.year, _endDate!.month, _endDate!.day, _endTime!.hour, _endTime!.minute);
+    final startDateTime = DateTime(
+      _startDate!.year, _startDate!.month, _startDate!.day, 
+      _startTime!.hour, _startTime!.minute
+    );
+    final endDateTime = DateTime(
+      _endDate!.year, _endDate!.month, _endDate!.day,
+      _endTime!.hour, _endTime!.minute
+    );
 
     if (endDateTime.isBefore(startDateTime)) {
       setState(() {
@@ -368,11 +506,14 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     });
 
     try {
-      final formattedStartDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(startDateTime);
-      final formattedEndDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(endDateTime);
+      final formattedStartDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(startDateTime.toUtc());
+      final formattedEndDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(endDateTime.toUtc());
 
       final url = Uri.parse(
-          'http://10.0.2.2:3000/sensor_data?farm_id=${widget.farmId}&start_date=$formattedStartDate&end_date=$formattedEndDate&sensor_id=${_selectedSensorId!}');
+        'http://192.168.1.2:3000/sensor_data?farm_id=${widget.farmId}'
+        '&start_date=$formattedStartDate&end_date=$formattedEndDate'
+        '&sensor_id=$_selectedSensorId'
+      );
 
       final response = await http.get(url).timeout(const Duration(seconds: 10));
 
@@ -392,33 +533,26 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
         }
 
         final sortedList = List<Map<String, dynamic>>.from(dataList)
-            ..sort((a, b) => (a['timestamp'] as String).compareTo(b['timestamp'] as String));
+          ..sort((a, b) => (a['timestamp'] as String).compareTo(b['timestamp'] as String));
 
         sensorData = sortedList.map((item) {
           try {
-            if (item['timestamp'] == null || item['value'] == null) {
-              return null;
-            }
-            final timestamp = DateTime.parse(item['timestamp'].toString());
-            final value = double.tryParse(item['value'].toString()) ?? 0;
-            return FlSpot(timestamp.millisecondsSinceEpoch.toDouble(), value);
+            if (item['timestamp'] == null || item['value'] == null) return null;
+            final timestamp = DateTime.parse(item['timestamp'].toString()).toUtc().millisecondsSinceEpoch.toDouble();
+            final value = double.tryParse(item['value'].toString()) ?? 0.0;
+            return FlSpot(timestamp, value);
           } catch (e) {
             return null;
           }
         }).whereType<FlSpot>().toList();
 
-        if (mounted) {
-          setState(() {
-            isLoading = false;
-            if (sensorData.isEmpty) {
-              errorMessage = "No valid data points available";
-              _showGraph = false;
-            } else {
-              errorMessage = '';
-              _showGraph = true;
-            }
-          });
-        }
+        setState(() {
+          isLoading = false;
+          if (sensorData.isEmpty) {
+            errorMessage = "No valid data points available";
+            _showGraph = false;
+          }
+        });
       } else {
         setState(() {
           errorMessage = 'Could not load data. Please try again.';
@@ -436,10 +570,9 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
   }
 
   Widget _buildGraph() {
-    if (sensorData.isEmpty) return _buildNoDataOrInitialScreen();
+    if (sensorData.isEmpty) return const SizedBox.shrink();
 
-    final lineColor = _sensorColors[_selectedSensorId] ?? Colors.blue;
-
+    final lineColor = _sensorColors[_selectedSensorId] ?? Colors.cyan;
     final ys = sensorData.map((e) => e.y).toList();
     final minY = ys.reduce((a, b) => a < b ? a : b);
     final maxY = ys.reduce((a, b) => a > b ? a : b);
@@ -452,129 +585,262 @@ class _HydroponicGraphState extends State<HydroponicGraph> {
     final xRange = maxX - minX;
     final interval = xRange > 0 ? (xRange / 5 > 60000 ? xRange / 5 : 60000) : 60000;
 
+    // Find min and max spots
+    final minSpot = sensorData.firstWhere((spot) => spot.y == minY);
+    final maxSpot = sensorData.firstWhere((spot) => spot.y == maxY);
+
     return Padding(
       padding: const EdgeInsets.only(top: 16.0),
-      child: LineChart(LineChartData(
-        lineTouchData: LineTouchData(
-          getTouchedSpotIndicator: (barData, spotIndexes) {
-            return spotIndexes.map((index) {
-              return TouchedSpotIndicatorData(
-                FlLine(color: lineColor.withOpacity(0.5), strokeWidth: 2),
-                FlDotData(
-                  getDotPainter: (spot, percent, bar, idx) => FlDotCirclePainter(radius: 6, color: lineColor),
-                ),
-              );
-            }).toList();
-          },
-          touchTooltipData: LineTouchTooltipData(
-            getTooltipItems: (spots) {
-              return spots.map((spot) {
-                final date = DateTime.fromMillisecondsSinceEpoch(spot.x.toInt());
-                final sensorDisplayName = _sensorNameMap[_selectedSensorId] ?? _selectedSensorId;
-                return LineTooltipItem(
-                  '${sensorDisplayName}\n${DateFormat('yyyy-MM-dd HH:mm:ss').format(date.toLocal())}\nValue: ${spot.y.toStringAsFixed(2)}',
-                  TextStyle(color: lineColor, fontWeight: FontWeight.bold),
+      child: LineChart(
+        LineChartData(
+          lineTouchData: LineTouchData(
+            getTouchedSpotIndicator: (barData, spotIndexes) {
+              return spotIndexes.map((index) {
+                final spot = barData.spots[index];
+                Color dotColor = lineColor;
+                if (spot.y == minY) dotColor = _minColor;
+                if (spot.y == maxY) dotColor = _maxColor;
+                return TouchedSpotIndicatorData(
+                  FlLine(color: lineColor.withOpacity(0.5), strokeWidth: 2),
+                  FlDotData(
+                    getDotPainter: (spot, percent, bar, idx) => 
+                      FlDotCirclePainter(radius: 6, color: dotColor),
+                  ),
                 );
               }).toList();
             },
-          ),
-        ),
-        minX: minX,
-        maxX: maxX,
-        minY: minY - padY,
-        maxY: maxY + padY,
-        lineBarsData: [
-          LineChartBarData(
-            spots: sensorData,
-            isCurved: true,
-            barWidth: 3,
-            color: lineColor,
-            dotData: const FlDotData(show: false),
-            belowBarData: BarAreaData(show: true, color: lineColor.withOpacity(0.2)),
-          ),
-        ],
-        titlesData: FlTitlesData(
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              getTitlesWidget: bottomTitleWidgets,
-              reservedSize: 40,
-              interval: interval.toDouble(),
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipItems: (spots) {
+                return spots.map((spot) {
+                  final date = DateTime.fromMillisecondsSinceEpoch(spot.x.toInt());
+                  final sensorName = _sensorNameMap[_selectedSensorId] ?? _selectedSensorId;
+                  return LineTooltipItem(
+                    '${sensorName}\n${DateFormat('yyyy-MM-dd HH:mm:ss').format(date.toLocal())}'
+                    '\nValue: ${spot.y.toStringAsFixed(2)}',
+                    TextStyle(color: lineColor, fontWeight: FontWeight.bold),
+                  );
+                }).toList();
+              },
+              getTooltipColor: (touchedSpot) => Colors.blueGrey.withOpacity(0.8),
+              fitInsideHorizontally: true,
+              fitInsideVertically: true,
             ),
+            handleBuiltInTouches: true,
           ),
-          leftTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              getTitlesWidget: leftTitleWidgets,
-              reservedSize: 40,
-              interval: (yRange > 0 ? yRange / 5 : 10).toDouble(),
+          minX: minX,
+          maxX: maxX,
+          minY: minY - padY,
+          maxY: maxY + padY,
+          lineBarsData: [
+            LineChartBarData(
+              spots: sensorData,
+              isCurved: true,
+              barWidth: 3,
+              color: lineColor,
+              dotData: FlDotData(
+                show: true,
+                getDotPainter: (spot, percent, barData, index) {
+                  if (spot == minSpot) {
+                    return FlDotCirclePainter(
+                      radius: 4,
+                      color: _minColor,
+                      strokeWidth: 2,
+                      strokeColor: Colors.white,
+                    );
+                  } else if (spot == maxSpot) {
+                    return FlDotCirclePainter(
+                      radius: 4,
+                      color: _maxColor,
+                      strokeWidth: 2,
+                      strokeColor: Colors.white,
+                    );
+                  }
+                  return FlDotCirclePainter(
+                    radius: 0,
+                    color: Colors.transparent,
+                  );
+                },
+              ),
+              belowBarData: BarAreaData(
+                show: true,
+                color: lineColor.withOpacity(0.2),
+              ),
             ),
+          ],
+          titlesData: FlTitlesData(
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: bottomTitleWidgets,
+                reservedSize: 40,
+                interval: interval.toDouble(),
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: leftTitleWidgets,
+                reservedSize: 40,
+                interval: (yRange > 0 ? yRange / 5 : 10).toDouble(),
+              ),
+            ),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           ),
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          gridData: FlGridData(
+            show: true,
+            drawHorizontalLine: true,
+            horizontalInterval: (yRange > 0 ? yRange / 5 : 10).toDouble(),
+            getDrawingHorizontalLine: (value) => 
+              FlLine(color: _secondaryTextColor.withOpacity(0.2), strokeWidth: 1),
+            drawVerticalLine: true,
+            verticalInterval: interval.toDouble(),
+            getDrawingVerticalLine: (value) =>
+              FlLine(color: _secondaryTextColor.withOpacity(0.1), strokeWidth: 1),
+          ),
+          borderData: FlBorderData(
+            show: true, 
+            border: Border.all(color: _secondaryTextColor, width: 1)),
         ),
-        gridData: FlGridData(
-          show: true,
-          drawHorizontalLine: true,
-          horizontalInterval: (yRange > 0 ? yRange / 5 : 10).toDouble(),
-          getDrawingHorizontalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.2), strokeWidth: 1),
-          drawVerticalLine: true,
-          verticalInterval: interval.toDouble(),
-          getDrawingVerticalLine: (value) => FlLine(color: Colors.grey.withOpacity(0.1), strokeWidth: 1),
-        ),
-        borderData: FlBorderData(show: true, border: Border.all(color: Colors.grey, width: 1)),
-      )),
+      ),
     );
   }
 
   Widget _buildNoDataOrInitialScreen() {
+    if (isLoading) {
+      return Center(child: CircularProgressIndicator(color: Colors.cyan));
+    }
+
     if (errorMessage.isNotEmpty) {
       return Center(
-         child: Text(
-            errorMessage,
-            style: const TextStyle(color: Colors.redAccent, fontSize: 16),
-            textAlign: TextAlign.center,
-         ),
+        child: Text(
+          errorMessage,
+          style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+          textAlign: TextAlign.center,
+        ),
       );
     }
 
-    if (_availableSensorsFiltered.isEmpty && !isLoading) {
+    if (_selectedSensorId == null) {
       return Center(
         child: Text(
-          'No hydroponic sensors available for this farm',
-          style: const TextStyle(color: Colors.white70, fontSize: 16),
+          'Error: No sensor ID provided to display graph.',
+          style: TextStyle(color: _secondaryTextColor, fontSize: 16),
           textAlign: TextAlign.center,
         ),
       );
     }
 
-    if (!_showGraph && !isLoading && sensorData.isEmpty) {
-      return const Center(
+    if (!_showGraph || sensorData.isEmpty) {
+      return Center(
         child: Text(
-          'Select a sensor and time range, then tap "Show Graph"',
-          style: TextStyle(color: Colors.white70, fontSize: 16),
+          'Select a time range and tap "Show Graph"\nNo data available for the selected range or sensor.',
+          style: TextStyle(color: _secondaryTextColor, fontSize: 16),
           textAlign: TextAlign.center,
         ),
       );
     }
 
-    return const Center(
-      child: CircularProgressIndicator(),
+    return Column(
+      children: [
+        Expanded(child: _buildGraph()),
+        _buildStatsCards(),
+      ],
     );
   }
 
   Widget bottomTitleWidgets(double value, TitleMeta meta) {
-    const style = TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 10);
-    if (sensorData.isEmpty || value < sensorData.first.x || value > sensorData.last.x) return const SizedBox.shrink();
+    final style = TextStyle(
+      color: _secondaryTextColor, 
+      fontWeight: FontWeight.bold, 
+      fontSize: 10
+    );
+    if (sensorData.isEmpty || value < sensorData.first.x || value > sensorData.last.x) {
+      return const SizedBox.shrink();
+    }
     final date = DateTime.fromMillisecondsSinceEpoch(value.toInt());
     final formattedDate = DateFormat('MM-dd HH:mm').format(date.toLocal());
 
-    return SideTitleWidget(axisSide: meta.axisSide, space: 8, child: Text(formattedDate, style: style, textAlign: TextAlign.center));
+    return SideTitleWidget(
+      axisSide: meta.axisSide,
+      space: 8,
+      child: Text(formattedDate, style: style, textAlign: TextAlign.center),
+    );
   }
 
   Widget leftTitleWidgets(double value, TitleMeta meta) {
-    const style = TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 12);
+    final style = TextStyle(
+      color: _secondaryTextColor, 
+      fontWeight: FontWeight.bold, 
+      fontSize: 12
+    );
     final text = value.toStringAsFixed(value.abs() > 10 ? 0 : 1);
-    return SideTitleWidget(axisSide: meta.axisSide, space: 8, child: Text(text, style: style));
+    return SideTitleWidget(
+      axisSide: meta.axisSide,
+      space: 8,
+      child: Text(text, style: style),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.sensorId == null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: Text('Hydroponic Graph - Farm ${widget.farmId}'),
+          backgroundColor: _backgroundColor,
+        ),
+        backgroundColor: _backgroundColor,
+        body: const Center(
+          child: Padding(
+            padding: EdgeInsets.all(16.0),
+            child: Text(
+              'Error: No sensor ID provided to display graph.',
+              style: TextStyle(color: Colors.redAccent, fontSize: 18),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Hydroponic Graph - Farm ${widget.farmId}'),
+        backgroundColor: _backgroundColor,
+      ),
+      backgroundColor: _backgroundColor,
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildDateTimePickers(),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.grey[800],
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: isLoading || _selectedSensorId == null ? null : _onShowGraphPressed,
+              child: isLoading
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        color: Colors.white, 
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : const Text('Show Graph'),
+            ),
+            const SizedBox(height: 16),
+            Expanded(
+              child: _buildNoDataOrInitialScreen(),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

@@ -25,7 +25,7 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
   // Updated sensor IDs for each farm
   final Map<String, List<String>> _farmSensors = {
     '70': [
-      'TEM01', 'HUM01', 'CO001', 'PH001', 'CE001', 
+      'TEM01', 'HUM01', 'CO001', 'PH001', 'CE001',
       'NH001', 'OX001', 'LUX01', 'PRED1',
     ],
     '71': [
@@ -98,7 +98,7 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
     if (!mounted) return;
 
     try {
-      final url = Uri.parse('http://10.0.2.2:3000/latest_sensor_data?farm_id=$farmId');
+      final url = Uri.parse('http://192.168.1.2:3000/latest_sensor_data?farm_id=$farmId');
       final response = await http.get(url).timeout(const Duration(seconds: 20));
 
       if (!mounted) return;
@@ -213,10 +213,10 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
 
   Widget _buildEmptyCard() {
     return _buildSensorCard(
-      'No Sensor', 
-      '-', 
-      null, 
-      'N/A', 
+      'No Sensor',
+      '-',
+      null,
+      'N/A',
       null,
     );
   }
@@ -256,7 +256,7 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
   String _getSensorTitle(String sensorId) {
     final sensorTitles = {
       // Farm 70 sensors
-      'TEM01': 'Air Temperature',
+      'TEM01': 'Water Temperature',
       'HUM01': 'Air Humidity',
       'CO001': 'CO2',
       'PH001': 'pH',
@@ -265,22 +265,22 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
       'OX001': 'Dissolved Oxygen',
       'LUX01': 'Light Intensity',
       'PRED1': 'Precipitation',
-      
+
       // Farm 71 sensors
-      'HUM03': 'Humidity 3',
+      'HUM03': 'Humidity',
       'PRE02': 'Pressure 2',
-      'RAIN1': 'Rainfall 1',
-      'RAIN2': 'Rainfall 2',
-      'TEM02': 'Temperature 2',
-      'WINA1': 'Wind Angle 1',
-      'WIND1': 'Wind Direction 1',
-      'WINS1': 'Wind Speed 1',
-      
+      'RAIN1': 'Rainfall One Hour',
+      'RAIN2': 'Rainfall One Day',
+      'TEM02': 'Air Temperature ',
+      'WINA1': 'Wind Direction',
+      'WIND1': 'Wind Speed Average',
+      'WINS1': 'Wind Speed Max',
+
       // Farm 0 sensors
-      'TEM02': 'Air Temperature 2',
-      'HUM02': 'Air Humidity 2',
+      'TEM02': 'Air Temperature',
+      'HUM02': 'Air Humidity',
       'NI001': 'Soil Moisture',
-      'PH011': 'pH 2',
+      'PH011': 'PH (PH001)',
       'POT01': 'Soil Temperature',
       'CC001': 'Carbon Monoxide',
       'CC002': 'Carbon Dioxide',
@@ -337,58 +337,16 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                if (!_isLoading && _locations.isNotEmpty && _locations.length > 1)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Select Location:',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white70),
-                        ),
-                        const SizedBox(height: 4),
-                        DropdownButtonFormField<String>(
-                          decoration: InputDecoration(
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide.none,
-                            ),
-                            filled: true,
-                            fillColor: const Color.fromARGB(255, 114, 114, 114),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          ),
-                          value: _selectedLocation,
-                          icon: const Icon(Icons.arrow_downward, color: Colors.white),
-                          elevation: 16,
-                          style: const TextStyle(color: Colors.white, fontSize: 16),
-                          onChanged: (String? newValue) {
-                            if (newValue != null && newValue != _selectedLocation) {
-                              setState(() {
-                                _selectedLocation = newValue;
-                                _latestData = _allLatestData[_selectedLocation];
-                                _updateErrorMessage();
-                              });
-                            }
-                          },
-                          items: _locations.map<DropdownMenuItem<String>>((String value) {
-                            return DropdownMenuItem<String>(
-                              value: value,
-                              child: Text(_getFarmName(value)),
-                            );
-                          }).toList(),
-                        ),
-                      ],
-                    ),
-                  ),
+                // --- Call the new _buildLocationDropdown here ---
+                _buildLocationDropdown(), // <-- Always included
 
-                if (_isLoading)
+                if (_isLoading) // Keep loading indicator conditional
                   const Center(child: Padding(
                     padding: EdgeInsets.all(20.0),
                     child: CircularProgressIndicator(),
                   )),
 
-                if (_errorMessage != null && !_isLoading)
+                if (_errorMessage != null && !_isLoading) // Keep error message conditional
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8.0),
                     child: Text(
@@ -398,6 +356,7 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
                     ),
                   ),
 
+                // Keep the GridView conditional on _isLoading and _errorMessage
                 if (!_isLoading && _errorMessage == null && _locations.isNotEmpty)
                   GridView.count(
                     shrinkWrap: true,
@@ -412,6 +371,62 @@ class _JamurState extends State<Jamur> with AutomaticKeepAliveClientMixin {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  // --- New _buildLocationDropdown function ---
+  Widget _buildLocationDropdown() {
+    // Only build the dropdown if there are multiple locations
+    if (_locations.length <= 1) {
+      return Container(); // Return empty container if not needed
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0), // Original padding
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Select Location:',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white70),
+          ),
+          const SizedBox(height: 4),
+          DropdownButtonFormField<String>(
+            decoration: InputDecoration(
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: const Color.fromARGB(255, 114, 114, 114),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            // Ensure the value is one of the available locations or null
+            value: _locations.contains(_selectedLocation) ? _selectedLocation : (_locations.isNotEmpty ? _locations.first : null),
+            icon: const Icon(Icons.arrow_downward, color: Colors.white),
+            elevation: 16,
+            style: const TextStyle(color: Colors.white, fontSize: 16),
+            onChanged: (String? newValue) {
+              if (newValue != null && newValue != _selectedLocation) {
+                setState(() {
+                  _selectedLocation = newValue;
+                  // Update _latestData for the newly selected location
+                  // Data for the new location might still be loading if fetchFutures isn't complete
+                  // but _allLatestData[newValue] will be the latest available
+                  _latestData = _allLatestData[_selectedLocation];
+                  _updateErrorMessage(); // Update error state based on data availability
+                });
+              }
+            },
+            items: _locations.map<DropdownMenuItem<String>>((String value) {
+              return DropdownMenuItem<String>(
+                value: value,
+                child: Text(_getFarmName(value)),
+              );
+            }).toList(),
+          ),
+        ],
       ),
     );
   }

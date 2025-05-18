@@ -46,7 +46,7 @@ class _LoginPageState extends State<LoginPage> {
 
     try {
       // Determine the API endpoint based on whether it's login or signup
-      final String apiUrl = _isSignUp ? 'http://10.0.2.2:3000/register' : 'http://10.0.2.2:3000/login';
+      final String apiUrl = _isSignUp ? 'http://192.168.1.2:3000/register' : 'http://10.0.2.2:3000/login';
 
       // Prepare the request body based on the operation
       final Map<String, String> body = _isSignUp

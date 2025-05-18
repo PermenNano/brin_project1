@@ -5,12 +5,13 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ">=3.0.0 <4.0.0"  # Updated for Flutter 3.13+ compatibility
+  sdk: ">=3.0.0 <4.0.0"  
 
 dependencies:
   flutter:
     sdk: flutter
   http: ^1.1.0
+  mqtt_client: ^10.0.0
   intl: ^0.18.0
   flutter_dotenv: ^5.2.0
   fl_chart:
