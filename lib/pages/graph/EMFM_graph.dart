@@ -170,7 +170,7 @@ class _EMFMGraphState extends State<EMFMGraph> {
     if (!mounted) return;
 
     try {
-      final url = Uri.parse('http://192.168.1.2:3000/gnss_sensors?gnss_id=${widget.gnssId}');
+      final url = Uri.parse('http://172.20.10.4:3000/gnss_sensors?gnss_id=${widget.gnssId}');
       final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (!mounted) return;
@@ -258,7 +258,7 @@ class _EMFMGraphState extends State<EMFMGraph> {
       final formattedEndDate = DateFormat('yyyy-MM-dd HH:mm:ss').format(endDateTime.toUtc());
 
       final url = Uri.parse(
-        'http://192.168.1.2:3000/gnss_sensor_data?gnss_id=${widget.gnssId}'
+        'http://172.20.10.4:3000/gnss_sensor_data?gnss_id=${widget.gnssId}'
         '&sensor_id=${_selectedSensorId!}'
         '&start_date=$formattedStartDate'
         '&end_date=$formattedEndDate'

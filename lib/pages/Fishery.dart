@@ -44,8 +44,9 @@ class _FisheryState extends State<Fishery>
   final int mqttBrokerPort = 1883;
   final String baseMqttClientId = 'mqttx_2875518f';
   final String setpointMqttTopic = 'topic/06/flutterapp';
+  // *** ADD YOUR SENSOR DATA TOPIC(S) HERE ***
   final List<String> subscriptionTopics = [
-    'topic/06/flutterapp'
+    'topic/06/flutterapp', // Keep the command topic if needed
   ];
 
   MqttServerClient? client;
@@ -128,9 +129,14 @@ class _FisheryState extends State<Fishery>
           .withClientIdentifier(client!.clientIdentifier)
           .withWillQos(MqttQos.atLeastOnce)
           .startClean()
-          .withWillTopic('willtopic')
-          .withWillMessage('Client disconnected unexpectedly')
-          .withWillRetain();
+          .withWillTopic('willtopic') // Consider if you need a Last Will Topic
+          .withWillMessage('Client disconnected unexpectedly') // Last Will Message
+          .withWillRetain(); // Last Will Retain
+
+      // If your broker supports MQTT 5 and you want to use it explicitly, uncomment the line below.
+      // Make sure you have cleared build caches and re-run pub get if you uncomment this.
+      // .withMqttVersion(MqttForSupportedProtocols.mqtt5);
+
 
       client!.connectionMessage = connMess;
 
@@ -144,7 +150,7 @@ class _FisheryState extends State<Fishery>
             _commandStatus = 'Connected to MQTT broker. Ready to send commands.';
           });
         }
-        _subscribeToTopics();
+         _subscribeToTopics(); // Subscribe AFTER successful connection
       } else {
         print('MQTT connection failed with state: ${client!.connectionStatus?.state}');
         if (mounted) {
@@ -184,20 +190,24 @@ class _FisheryState extends State<Fishery>
     }
   }
 
-  void _subscribeToTopics() {
+   void _subscribeToTopics() {
     if (client?.connectionStatus?.state != MqttConnectionState.connected) {
       print('Cannot subscribe - client not connected');
       return;
     }
 
+    if (subscriptionTopics.isEmpty) {
+      print('No subscription topics defined.');
+      return;
+    }
+
     print('Subscribing to topics: ${subscriptionTopics.join(', ')}');
-    
+
     try {
       for (final topic in subscriptionTopics) {
         client!.subscribe(topic, MqttQos.atLeastOnce);
       }
-      
-      _setupMessageHandling();
+       _setupMessageHandling(); // Setup message handling AFTER successful subscription
     } catch (e) {
       print('Error subscribing to topics: $e');
       if (mounted) {
@@ -208,49 +218,139 @@ class _FisheryState extends State<Fishery>
     }
   }
 
+
   void _setupMessageHandling() {
     if (client == null || client!.updates == null) {
       print('MQTT client or updates stream is null');
       return;
     }
 
+    // Cancel previous subscription to avoid multiple listeners if reconnecting
+    _mqttSubscription?.cancel();
+
     _mqttSubscription = client!.updates!.listen((List<MqttReceivedMessage<MqttMessage>> messages) {
       for (var message in messages) {
-        final payload = message.payload;
-        if (payload is! MqttPublishMessage) {
-          print('Received non-publish message');
+        final receivedMsg = message.payload;
+        final topic = message.topic;
+
+        if (receivedMsg is! MqttPublishMessage) {
+          print('Received non-publish message on topic: $topic');
           continue;
         }
 
-        final topic = message.topic;
-        final payloadStr = MqttPublishPayload.bytesToStringAsString(payload.payload.message);
+        final MqttPublishMessage recMess = receivedMsg;
+        // Corrected payload extraction
+        final String payloadStr = MqttPublishPayload.bytesToStringAsString(recMess.payload as Uint8Buffer);
 
-        print('Received message on $topic: $payloadStr');
+
+        print('Received message on topic: $topic with payload: $payloadStr');
 
         if (mounted) {
           setState(() {
             _lastMqttMessage = 'Topic: $topic\nPayload: $payloadStr';
-            
-            try {
-              final jsonData = jsonDecode(payloadStr);
-              if (jsonData is Map) {
-                if (jsonData.containsKey('min_humidity')) {
-                  _minHumController.text = jsonData['min_humidity'].toString();
-                }
-                if (jsonData.containsKey('max_humidity')) {
-                  _maxHumController.text = jsonData['max_humidity'].toString();
-                }
-                if (jsonData.containsKey('min_temperature')) {
-                  _minTempController.text = jsonData['min_temperature'].toString();
-                }
-                if (jsonData.containsKey('max_temperature')) {
-                  _maxTempController.text = jsonData['max_temperature'].toString();
-                }
-              }
-            } catch (e) {
-              print('Error parsing MQTT message: $e');
-            }
           });
+        }
+
+        // *** Process messages based on topic and intended use (threshold table / UI update) ***
+
+        if (topic == setpointMqttTopic) {
+          // Handle messages received on the command topic (if needed, e.g., confirmation)
+          print('Received message on command topic.');
+           try {
+            final jsonData = jsonDecode(payloadStr);
+             if (jsonData is Map) {
+               // Optionally update control fields if the broker echoes values
+              if (jsonData.containsKey('min_humidity')) {
+                _minHumController.text = jsonData['min_humidity'].toString();
+              }
+              if (jsonData.containsKey('max_humidity')) {
+                _maxHumController.text = jsonData['max_humidity'].toString();
+              }
+              if (jsonData.containsKey('min_temperature')) {
+                _minTempController.text = jsonData['min_temperature'].toString();
+              }
+              if (jsonData.containsKey('max_temperature')) {
+                _maxTempController.text = jsonData['max_temperature'].toString();
+              }
+            }
+          } catch (e) {
+             print('Error parsing command confirmation message: $e');
+          }
+
+        }
+        // You'll need to adjust this condition based on the actual topic(s) your sensors publish to
+        // This condition attempts to match topics that might contain sensor data
+        // Example: 'farm/60/sensor_data', 'farm/61/sensor_data', 'sensor/tem01/data', etc.
+        // You might need more specific checks depending on your topic structure.
+        else if (subscriptionTopics.any((t) => topic.startsWith(t.replaceAll('#', '').replaceAll('+', '')) && topic != setpointMqttTopic)) {
+           print('Attempting to process sensor data message.');
+          try {
+            final jsonData = jsonDecode(payloadStr);
+
+            // *** Validate and Extract Sensor Data relevant for threshold table and UI ***
+            // Assuming the payload contains farm_id, sensor_id, value, and optionally timestamp
+            if (jsonData is Map &&
+                jsonData.containsKey('farm_id') &&
+                jsonData.containsKey('sensor_id') &&
+                jsonData.containsKey('value')) {
+
+              final String farmId = jsonData['farm_id'].toString();
+              final String sensorId = jsonData['sensor_id'].toString();
+              final double? value = double.tryParse(jsonData['value'].toString());
+              final String? timestamp = jsonData.containsKey('timestamp') ? jsonData['timestamp'].toString() : null; // Get timestamp if available
+
+
+              if (value != null) { // Process if value is valid
+
+                // Check if this sensor/farm combination needs to update the threshold table
+                 if ( (sensorId == 'TEM01' || sensorId == 'HUM01') ) { // Only send TEM01 and HUM01 to threshold endpoint
+                    print('Parsed Sensor Data for Threshold: Farm ID: $farmId, Sensor ID: $sensorId, Value: $value');
+                    // *** Call function to send data to the threshold table endpoint ***
+                    _sendSensorDataToThresholdTable(farmId, sensorId, value);
+                 } else {
+                    print('Received sensor data for non-TEM01/HUM01 sensor ($sensorId). Not sending to threshold.');
+                 }
+
+
+                 // Update UI data structure for all relevant sensors on the selected farm
+                 if(mounted && _selectedLocation == farmId && _sensorIdsToDisplay.contains(sensorId)) {
+                    setState(() {
+                       _allLatestData.update(farmId, (currentData) {
+                           // Keep the timestamp from the MQTT message if available, or generate one
+                           currentData[sensorId] = {
+                               'farm_id': farmId,
+                               'sensor_id': sensorId,
+                               'timestamp': timestamp ?? DateTime.now().toIso8601String(), // Store timestamp in UI data
+                               'value': value
+                           };
+                           return currentData;
+                       }, ifAbsent: () => {
+                           sensorId: {
+                               'farm_id': farmId,
+                               'sensor_id': sensorId,
+                               'timestamp': timestamp ?? DateTime.now().toIso8601String(), // Store timestamp in UI data
+                               'value': value
+                           }
+                       });
+                       _updateErrorMessage(); // Recalculate error message based on new data
+                    });
+                 }
+
+              } else {
+                 print('Received sensor data message with invalid value for sensor $sensorId: ${jsonData['value']}');
+              }
+
+            } else {
+               print('Received sensor data message with unexpected JSON format: $payloadStr');
+            }
+
+          } catch (e) {
+            print('Error parsing sensor data message: $e');
+          }
+
+        } else {
+           // Handle messages on other topics if necessary
+           print('Received message on an unhandled topic: $topic');
         }
       }
     }, onError: (error) {
@@ -261,12 +361,53 @@ class _FisheryState extends State<Fishery>
         });
       }
     });
+
+    print('MQTT message handling listener setup complete.');
   }
+
+  // Function to send sensor data to your backend API for threshold table update
+  Future<void> _sendSensorDataToThresholdTable(String farmId, String parameter, double value) async {
+      // *** REPLACE WITH YOUR ACTUAL BACKEND ENDPOINT FOR THRESHOLD UPDATE/INSERT ***
+      final url = Uri.parse('http://172.20.10.4:3000/update_threshold_data'); // Make sure this URL is correct
+      try {
+         final response = await http.post( // Or PUT, depending on your backend API design
+             url,
+             headers: {'Content-Type': 'application/json'},
+             body: jsonEncode({
+                 'farm_id': farmId,
+                 'parameter': parameter, // Use 'parameter' as per your threshold table schema
+                 'value': value,
+             }),
+         ).timeout(const Duration(seconds: 10));
+
+         if (response.statusCode == 200) {
+             print('Sensor data ($parameter) successfully sent to backend for threshold update: Farm $farmId, Value: $value');
+             // Optionally show a success message to the user
+         } else {
+             print('Failed to send sensor data ($parameter) to backend for threshold update: ${response.statusCode} ${response.reasonPhrase}');
+             // Handle backend error, maybe show a status message
+              if (mounted) {
+                setState(() {
+                   _commandStatus = 'Failed to update threshold for $parameter: ${response.statusCode}';
+                });
+              }
+         }
+      } catch (e) {
+          print('Error sending sensor data ($parameter) to backend for threshold update: $e');
+           // Handle network or other errors during the HTTP request
+            if (mounted) {
+              setState(() {
+                 _commandStatus = 'Network error updating threshold for $parameter: ${e.toString()}';
+              });
+            }
+      }
+  }
+
 
   void _disconnectMqtt() {
     print('Attempting to disconnect MQTT client');
     try {
-      _mqttSubscription?.cancel();
+      _mqttSubscription?.cancel(); // Cancel the subscription on disconnect
       if (client?.connectionStatus?.state == MqttConnectionState.connected) {
         for (final topic in subscriptionTopics) {
           client!.unsubscribe(topic);
@@ -274,6 +415,15 @@ class _FisheryState extends State<Fishery>
         }
       }
       client?.disconnect();
+       if (mounted) {
+        setState(() {
+          mqttConnectionState = MqttConnectionState.disconnected;
+           if (_commandStatus.contains('Connected') || _commandStatus.contains('Disconnecting')) {
+              _commandStatus = 'Disconnected from MQTT broker.';
+           }
+           _lastMqttMessage = 'MQTT Disconnected.';
+        });
+       }
     } catch (e) {
       print('Error during MQTT disconnect: $e');
       if (mounted) {
@@ -293,6 +443,7 @@ class _FisheryState extends State<Fishery>
         _commandStatus = 'Connected to MQTT broker. Ready to send commands.';
       });
     }
+    // Subscriptions are now handled in _connectMqtt after successful connection
   }
 
   void _onDisconnected() {
@@ -474,8 +625,13 @@ class _FisheryState extends State<Fishery>
   Future<void> _fetchLatestSensorData(String farmId) async {
     if (!mounted) return;
 
+    // This function is still intended to fetch the *latest* sensor data for display,
+    // likely from the sensor_data table, not the threshold table.
+    // If you want to display current threshold values, you would need a separate
+    // endpoint for the threshold table.
+    // *** REPLACE WITH YOUR ACTUAL BACKEND ENDPOINT FOR LATEST SENSOR DATA ***
     try {
-      final url = Uri.parse('http://10.0.2.2:3000/latest_sensor_data?farm_id=$farmId');
+      final url = Uri.parse('http://172.20.10.4:3000/latest_sensor_data?farm_id=$farmId'); // Make sure this URL is correct
       print('Fetching latest data for farm $farmId from URL: $url');
 
       final response = await http.get(url).timeout(const Duration(seconds: 20));
@@ -499,7 +655,7 @@ class _FisheryState extends State<Fishery>
         for (var item in dataList) {
           if (item is! Map<String, dynamic> ||
               item['sensor_id'] == null ||
-              item['timestamp'] == null ||
+              item['timestamp'] == null || // Ensure timestamp is present if you use it internally
               item['value'] == null) {
             print("Skipping invalid data item for farm $farmId: $item");
             continue;
@@ -532,9 +688,12 @@ class _FisheryState extends State<Fishery>
     }
   }
 
+  // This function is used to format the timestamp string for display,
+  // but the display lines in _buildSensorCard are commented out now.
   String _formatTimestamp(String? ts) {
     if (ts == null || ts.isEmpty) return "-";
     try {
+      // Assuming timestamp is in a format parsable by DateTime
       final dtUtc = DateTime.parse(ts).toUtc();
       final dtLocal = dtUtc.toLocal();
       return DateFormat('dd-MM-yyyy HH:mm:ss').format(dtLocal);
@@ -649,15 +808,15 @@ class _FisheryState extends State<Fishery>
                     ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8),
-              Text(
-                timestamp ?? '-',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: onTap != null ? Colors.grey[600] : Colors.white38,
-                    ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 4),
+              // const SizedBox(height: 8), // Commented out
+              // Text( // Commented out
+              //   timestamp ?? '-', // Commented out
+              //   style: Theme.of(context).textTheme.bodySmall?.copyWith( // Commented out
+              //         color: onTap != null ? Colors.grey[600] : Colors.white38, // Commented out
+              //       ), // Commented out
+              //   textAlign: TextAlign.center, // Commented out
+              // ), // Commented out
+               const SizedBox(height: 8), // Kept a SizedBox for spacing below value
               Text(
                 'ID: $sensorId',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -665,7 +824,7 @@ class _FisheryState extends State<Fishery>
                       fontSize: 10,
                     ),
                 textAlign: TextAlign.center,
-              ),
+                ),
               const SizedBox(height: 8),
               if (onTap != null)
                 Text(
@@ -1056,7 +1215,7 @@ class _FisheryState extends State<Fishery>
       return _buildSensorCard(
         _getSensorTitle(sensorId),
         sensorData?['value']?.toString() ?? '-',
-        _formatTimestamp(sensorData?['timestamp']),
+        _formatTimestamp(sensorData?['timestamp']), // Timestamp is still passed but not displayed in the card
         sensorId,
         isTappable
             ? () {

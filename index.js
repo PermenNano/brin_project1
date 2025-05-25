@@ -34,6 +34,17 @@ const pool = new Pool({
 // max: 20,
 // });
 
+// const pool = new Pool({
+// 	user: 'president',
+// 	host: '192.168.101.5',
+// 	database: 'postgres',
+// 	password: 'president123',
+// 	port: 5431,
+// 	connectionTimeoutMillis: 30000,
+// 	idleTimeoutMillis: 120000,
+// 	max: 20,
+// });
+
 
 pool.connect((err, client, release) => {
 	if (err) {

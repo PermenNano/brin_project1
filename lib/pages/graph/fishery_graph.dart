@@ -81,7 +81,7 @@ class _FisheryGraphState extends State<FisheryGraph> {
     if (!mounted) return;
 
     try {
-      final url = Uri.parse('http://192.168.1.2:3000/sensors?farm_id=${widget.farmId}');
+      final url = Uri.parse('http://172.20.10.4:3000/sensors?farm_id=${widget.farmId}');
       final response = await http.get(url).timeout(const Duration(seconds: 10));
 
       if (!mounted) return;
@@ -617,7 +617,7 @@ class _FisheryGraphState extends State<FisheryGraph> {
           DateFormat('yyyy-MM-dd HH:mm:ss').format(endDateTime.toUtc());
 
       final url = Uri.parse(
-          'http://192.168.1.2:3000/sensor_data?farm_id=${widget.farmId}&start_date=$formattedStartDate&end_date=$formattedEndDate&sensor_id=$_selectedSensorId');
+          'http://172.20.10.4:3000/sensor_data?farm_id=${widget.farmId}&start_date=$formattedStartDate&end_date=$formattedEndDate&sensor_id=$_selectedSensorId');
 
       final response = await http.get(url).timeout(const Duration(seconds: 10));
 

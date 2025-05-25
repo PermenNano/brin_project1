@@ -20,9 +20,7 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
 
   bool _isLoading = true;
 
-  String? _errorMessage;
-
-  final List<String> _locations = const ['10', '11']; // Added const
+  final List<String> _locations = const ['10', '11'];
 
   final Map<String, Map<String, Map<String, dynamic>>> _allLatestData = {};
 
@@ -39,6 +37,8 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
   ];
 
   final int _numberOfEmptyCards = 4;
+
+  String? _errorMessage;
 
 
   @override
@@ -93,9 +93,7 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
     if (mounted) {
       setState(() {
         _latestData = _allLatestData.containsKey(_selectedLocation) ? _allLatestData[_selectedLocation] : null;
-
         _isLoading = false;
-
         _updateErrorMessage();
       });
     }
@@ -105,8 +103,7 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
     if (!mounted) return;
 
     try {
-      final url = Uri.parse(
-          'http://192.168.1.2:3000/latest_sensor_data?farm_id=$farmId');
+      final url = Uri.parse('http://172.20.10.4:3000/latest_sensor_data?farm_id=$farmId');
 
       print('Fetching latest data for farm $farmId from URL: $url');
 
@@ -138,8 +135,14 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
         }
 
         if (mounted) {
-          _allLatestData[farmId] = latestRecords;
-          print('Successfully fetched and processed latest data for farm $farmId. Found ${latestRecords.length} latest sensor readings.');
+          final Map<String, Map<String, dynamic>> filteredLatestRecords = {};
+            for(var sensorId in _sensorIdsToDisplay) {
+              if(latestRecords.containsKey(sensorId)) {
+                filteredLatestRecords[sensorId] = latestRecords[sensorId]!;
+              }
+            }
+          _allLatestData[farmId] = filteredLatestRecords;
+          print('Successfully fetched and processed latest data for farm $farmId. Displaying ${filteredLatestRecords.length} of ${_sensorIdsToDisplay.length} sensors.');
         }
 
       } else {
@@ -193,9 +196,9 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
               Text(
                 title,
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: onTap != null ? null : Colors.white54,
-                ),
+                      fontWeight: FontWeight.bold,
+                      color: onTap != null ? null : Colors.white54,
+                    ),
                 textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
@@ -204,34 +207,31 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
               Text(
                 value,
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: onTap != null ? null : Colors.white54,
-                ),
+                      fontWeight: FontWeight.w600,
+                      color: onTap != null ? null : Colors.white54,
+                    ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8),
-              Text(
-                timestamp ?? '-',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: onTap != null ? Colors.grey[600] : Colors.white38,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 4),
+                const SizedBox(height: 8),
               Text(
                 'ID: $sensorId',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: onTap != null ? Colors.grey[500] : Colors.white30,
-                  fontSize: 10,
-                ),
+                      color: onTap != null ? Colors.grey[500] : Colors.white30,
+                      fontSize: 10,
+                    ),
                 textAlign: TextAlign.center,
-              ),
+               ),
               const SizedBox(height: 8),
               if (onTap != null)
                 Text(
                   'More Info',
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(color: Colors.blueAccent),
                 ),
+                if (onTap == null)
+                  const Text(
+                  'No Data',
+                  style: TextStyle(color: Colors.white38),
+                   ),
             ],
           ),
         ),
@@ -283,12 +283,12 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
       return DateFormat('dd-MM-yyyy HH:mm:ss').format(dtLocal);
     } catch (_) {
       print('Failed to parse timestamp for formatting: $ts');
-      return ts ?? '-'; // Added ?? '-' for safety
+      return ts ?? '-';
     }
   }
 
   String _getFarmName(String farmId) {
-    final farmNames = const { // Added const
+    final farmNames = const {
       '10': 'Farm 10',
       '11': 'Farm 11',
     };
@@ -296,18 +296,45 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
   }
 
   void _updateErrorMessage() {
+      if (!mounted) return;
+
     if (_locations.isEmpty) {
-      _errorMessage = "No locations defined for this view.";
-    } else if (_allLatestData.isEmpty && !_isLoading) {
-      _errorMessage = _errorMessage ?? "Could not retrieve data for any location. Check backend and network.";
-    } else if (!_allLatestData.containsKey(_selectedLocation) && !_isLoading) {
-      _errorMessage = "Data for Farm $_selectedLocation not loaded. Please check backend or try refreshing.";
-    } else if ((_allLatestData[_selectedLocation] == null || _allLatestData[_selectedLocation]!.isEmpty) && !_isLoading) {
-      _errorMessage = "No sensor data available for Farm $_selectedLocation.";
-    } else {
-      _errorMessage = null;
+      setState(() {
+          _errorMessage = "No locations defined for this view.";
+      });
+      return;
     }
+
+    if (_isLoading) {
+        setState(() {
+          _errorMessage = null;
+        });
+        return;
+    }
+
+    if (_allLatestData.isEmpty) {
+      setState(() {
+          _errorMessage = "Could not retrieve data for any location. Check backend and network.";
+      });
+      return;
+    }
+
+      if (!_allLatestData.containsKey(_selectedLocation) || _allLatestData[_selectedLocation] == null || _allLatestData[_selectedLocation]!.isEmpty) {
+      setState(() {
+          if(_sensorIdsToDisplay.isNotEmpty){
+            _errorMessage = "No sensor data available for Farm ${_getFarmName(_selectedLocation)}.";
+          } else {
+            _errorMessage = "No known sensors configured for Farm ${_getFarmName(_selectedLocation)} in the app.";
+          }
+      });
+      return;
+    }
+
+    setState(() {
+      _errorMessage = null;
+    });
   }
+
 
   String _getSensorTitle(String sensorId) {
     final sensorTitles = {
@@ -335,22 +362,27 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
         _formatTimestamp(sensorData?['timestamp']),
         sensorId,
         sensorData != null ? () => _navigateToDetail(context, _selectedLocation, sensorId)
-             : () {
-           print('No data available to show graph for $sensorId on Farm $_selectedLocation');
-           ScaffoldMessenger.of(context).showSnackBar(
-             SnackBar(content: Text('No historical data available for ${_getSensorTitle(sensorId)}.')),
-           );
-         },
+              : () {
+            print('No data available to show graph for $sensorId on Farm $_selectedLocation');
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('No historical data available for ${_getSensorTitle(sensorId)}.')),
+            );
+          },
       );
     }).toList();
 
-    for (int i = 0; i < _numberOfEmptyCards; i++) {
-      sensorCards.add(_buildEmptyCard());
+    final int currentCardsCount = sensorCards.length;
+    if (currentCardsCount < _sensorIdsToDisplay.length + _numberOfEmptyCards) {
+      final int remainingSlots = (_sensorIdsToDisplay.length + _numberOfEmptyCards) - currentCardsCount;
+        for (int i = 0; i < remainingSlots; i++) {
+          sensorCards.add(_buildEmptyCard());
+        }
     }
+
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Hydroponic'),
+        title: Text('Hydroponic - ${_getFarmName(_selectedLocation)}'),
         centerTitle: true,
       ),
       body: RefreshIndicator(
@@ -362,9 +394,7 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // --- Call the new _buildLocationDropdown here ---
-                _buildLocationDropdown(),
-                // --- Remove the old conditional Padding block that was here ---
+                  _buildLocationDropdown(),
 
 
                 if (_isLoading)
@@ -375,7 +405,7 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
 
                 if (_errorMessage != null && !_isLoading)
                   Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0),
+                    padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 8.0),
                     child: Text(
                       _errorMessage!,
                       style: const TextStyle(color: Colors.red, fontSize: 16),
@@ -383,8 +413,7 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
                     ),
                   ),
 
-                // Keep the GridView conditional on _isLoading and _errorMessage
-                if (!_isLoading && _errorMessage == null && (_locations.isNotEmpty))
+                if (!_isLoading && _errorMessage == null && (_allLatestData.containsKey(_selectedLocation) && _allLatestData[_selectedLocation] != null))
                   GridView.count(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
@@ -402,21 +431,18 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
     );
   }
 
-  // --- New _buildLocationDropdown function ---
   Widget _buildLocationDropdown() {
-    // This condition determines if we should show the actual dropdown or just empty space
     if (_locations.length <= 1) {
-      return Container(); // Returns an empty box if not enough locations
+      return Container();
     }
 
-    // Otherwise, build and return the styled dropdown
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0), // Reverted padding back to vertical: 8.0
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Select Location:',
+            'Select Farm:',
             style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white70),
           ),
           const SizedBox(height: 4),
@@ -434,13 +460,13 @@ class _HydroponicState extends State<Hydroponic> with AutomaticKeepAliveClientMi
             icon: const Icon(Icons.arrow_downward, color: Colors.white),
             elevation: 16,
             style: const TextStyle(color: Colors.white, fontSize: 16),
+            dropdownColor: const Color.fromARGB(255, 114, 114, 114),
             onChanged: (String? newValue) {
               if (newValue != null && newValue != _selectedLocation) {
                 setState(() {
                   _selectedLocation = newValue;
-                  // Update _latestData for the newly selected location
                   _latestData = _allLatestData[_selectedLocation];
-                  _updateErrorMessage(); // Update error state based on data availability
+                  _updateErrorMessage();
                 });
               }
             },
